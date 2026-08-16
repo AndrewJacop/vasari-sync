@@ -1,15 +1,17 @@
 import { resolveBackend } from "../core/backendResolver.js";
-import { computeFileSyncStates, STATUS_SECTIONS } from "../core/syncState.js";
 import { readManifest } from "../core/manifest.js";
+import { fetchRemoteIndex } from "../core/remoteIndex.js";
+import { computeFileSyncStates, STATUS_SECTIONS } from "../core/syncState.js";
+import { withSpinner } from "../utils/progress.js";
 
 /**
- * `vsync status` — cheap, read-only report per tracked file: local state
- * (fresh hash vs. last synced) crossed with the backend's current state
- * (one `list()` call, scoped to this project's key prefix). Paths and
- * statuses only — never file contents or values.
+ * `vsync status` — cheap, read-only live report per tracked file: the
+ * CURRENT local content (fresh hash) against the CURRENT remote state
+ * (one index fetch from the backend). Paths and statuses only — never
+ * file contents or values.
  *
  * `--json` emits `{projectId, backend, files: [{path, status, note?}]}`
- * (status values are the LocalStatus union) instead of the prose sections.
+ * (status values are the SyncStatus union) instead of the prose sections.
  */
 export async function runStatusCommand(
   projectRoot: string,
@@ -22,19 +24,17 @@ export async function runStatusCommand(
   }
   const backend = await resolveBackend(projectRoot, homeDir);
 
-  // One listing covers every tracked file; the projectId prefix scopes it
-  // (server-side filtering on S3, walk-filter elsewhere).
-  const remoteByKey = new Map(
-    (await backend.list(`${manifest.projectId}/`)).map((f) => [f.path, f]),
-  );
-  const states = await computeFileSyncStates(projectRoot, manifest, remoteByKey);
+  const index = (await withSpinner("Fetching remote index", () =>
+    fetchRemoteIndex(backend, manifest.projectId),
+  )) ?? { files: {} };
+  const states = await computeFileSyncStates(projectRoot, manifest, index);
 
   const byStatus = new Map<string, { path: string; note?: string }[]>();
-  for (const { entry, status } of states) {
-    const note =
-      status === "remote-missing" && entry.lastSyncedHash === undefined
-        ? "not pushed yet"
-        : undefined;
+  for (const { entry, status, remote } of states) {
+    // "no local copy either" is the one real extra fact (the file exists
+    // nowhere); remote-missing needs no note — the header already says
+    // "never pushed, or deleted there" and the model can't tell them apart.
+    const note = status === "missing-locally" && !remote ? "no local copy either" : undefined;
     const bucket = byStatus.get(status) ?? [];
     bucket.push({ path: entry.path, note });
     byStatus.set(status, bucket);
@@ -46,12 +46,10 @@ export async function runStatusCommand(
         {
           projectId: manifest.projectId,
           backend: manifest.backend,
-          files: states.map(({ entry, status }) => ({
+          files: states.map(({ entry, status, remote }) => ({
             path: entry.path,
             status,
-            ...(status === "remote-missing" && entry.lastSyncedHash === undefined
-              ? { note: "not pushed yet" }
-              : {}),
+            ...(status === "missing-locally" && !remote ? { note: "no local copy either" } : {}),
           })),
         },
         null,

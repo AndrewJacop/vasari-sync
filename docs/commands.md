@@ -259,9 +259,10 @@ No files tracked yet — add some later with `vsync add <path>` or re-run `vsync
 The machine-B half of the model. The manifest never travels through git
 (it lists secret file _paths_); `init` and `link` keep `.vsync/` in the
 project's `.gitignore`. On a fresh clone, `link` rebuilds the manifest from
-the backend: every file under the project's `<projectId>/` prefix becomes
-a tracked entry, the project joins `~/.vsync/config.json`, and vsync offers
-to pull immediately.
+the backend: the tracked paths come from the backend's remote index
+(`.vsync-index.json` — falling back to the raw file listing for backends
+written by older vsync versions), the project joins `~/.vsync/config.json`,
+and vsync offers to pull immediately.
 
 The project ID is whatever `vsync list` shows on the machine that pushed
 (it defaults to the project folder name at `init` time). Backend profiles
@@ -287,10 +288,10 @@ Linked 'my-project' (backend: s3) — 2 tracked file(s): .env, local-notes.txt.
 Summary: 2 pulled
 ```
 
-Declining the pull leaves placeholder hashes in the manifest; if local
-copies of the files already exist, `vsync status` reports them as
-conflicts until a pull (or `--force`) resolves them — vsync never
-silently overwrites either side.
+Declining the pull leaves the tracked paths in place with no local
+files: `vsync status` reports them as missing-locally until a pull
+restores them, and a later pull only overwrites files that actually
+differ from the backend.
 
 ---
 
@@ -337,20 +338,20 @@ Local files were NOT deleted, and any copies already pushed stay in storage unti
 
 ## `vsync status`
 
-Cheap, read-only report. Re-hashes every tracked file locally, makes one
-backend listing scoped to `<projectId>/`, and groups files most-urgent
-first. Prints **paths and statuses only** — never contents or values.
+Cheap, read-only report. Hashes every tracked file locally and compares
+against the backend's **current state** — tracked in `.vsync-index.json`, a
+small index file vsync maintains on the backend (one small fetch; no
+per-file downloads) — grouping files most-urgent first. Prints **paths and
+statuses only** — never contents or values.
 
 ### Sections (skipped when empty)
 
-| Section header                                                                         | Meaning                                                         |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `Conflicts (changed locally AND remotely since last sync — resolve before push/pull):` | both sides changed; `push`/`pull` will refuse without `--force` |
-| `Changed locally (not yet pushed):`                                                    | run `vsync push`                                                |
-| `Changed remotely (not yet pulled):`                                                   | run `vsync pull`                                                |
-| `Missing locally (tracked, but no local file):`                                        | `vsync pull` restores it                                        |
-| `Missing remotely (not on the backend — never pushed, or deleted there):`              | `vsync push` uploads it (never-pushed entries are noted)        |
-| `In sync:`                                                                             | nothing to do                                                   |
+| Section header                                            | Meaning                                                                    |
+| --------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `Differ (local ≠ remote — push or pull to align):`        | the local and remote copies differ; the direction you pick wins            |
+| `Missing locally (pull restores; push deletes remotely):` | tracked, but no local file — `pull` restores it; `push` deletes the remote |
+| `Not on remote (never pushed, or deleted there):`         | `vsync push` uploads it                                                    |
+| `In sync:`                                                | nothing to do                                                              |
 
 ### Example
 
@@ -358,15 +359,18 @@ first. Prints **paths and statuses only** — never contents or values.
 $ vsync status
 Project 'my-project' (backend: s3) — 3 tracked file(s)
 
-Changed locally (not yet pushed):
+Differ (local ≠ remote — push or pull to align):
   .env
 
-Missing remotely (not on the backend — never pushed, or deleted there):
-  config.local.json (not pushed yet)
+Not on remote (never pushed, or deleted there):
+  config.local.json
 
 In sync:
   .env.production
 ```
+
+A file missing on both sides (tracked locally deleted, never pushed) is
+listed under _Missing locally_ with a `(no local copy either)` note.
 
 ---
 
@@ -379,16 +383,17 @@ tracked yet. Paths only by default.
 
 ### Flags
 
-| Flag            | Effect                                                                                                           |
-| --------------- | ---------------------------------------------------------------------------------------------------------------- |
-| (none)          | Differing paths + untracked candidates                                                                           |
-| `--show-values` | Additionally print real line-by-line content diffs. **This prints secret values to your terminal** — opt-in only |
+| Flag            | Effect                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------------------------- |
+| (none)          | Differing paths + untracked candidates                                                                      |
+| `--show-values` | Additionally print real line-by-line content diffs (`-` = remote, `+` = local; binary files get a size/date |
+|                 | summary). **This prints secret values to your terminal** — opt-in only                                      |
 
 ### Example (default)
 
 ```console
 $ vsync diff
-Changed locally (not yet pushed):
+Differ (local ≠ remote — push or pull to align):
   .env
 2 tracked file(s), 1 differ
 
@@ -399,13 +404,13 @@ Untracked candidates (same scan as `vsync init`):
 
 ### Example (`--show-values`)
 
-Git-style diffs under a per-file header. `-` lines are the last-synced
-base version; `+` lines are the side that changed since.
+Git-style diffs under a per-file header. `-` lines are the remote copy,
+`+` lines are the local one.
 
 ```console
 $ vsync diff --show-values
 
-── .env (local-modified) ──
+── .env (differs) ──
 --- a/.env remote
 +++ b/.env local
 @@ -1,2 +1,3 @@
@@ -416,27 +421,35 @@ $ vsync diff --show-values
 ```
 
 Files missing one side get a note instead of a diff — e.g.
-`(no remote copy — never pushed, or deleted on the backend)`.
+`(no remote copy — never pushed, or deleted on the backend)`. Binary
+files get a summary line (sizes + remote push date) instead of garbage
+diff output.
 
 ---
 
 ## `vsync push`
 
-Upload tracked files that changed since the last sync. Per-file outcomes
-(never all-or-nothing — one failing file doesn't block or roll back the
+Make the backend match local (**mirror semantics**). The current local
+files are compared against the backend's current state (the remote
+index), then — on interactive terminals — the full plan is printed for
+confirmation before anything transfers: uploads, overwrites, and
+deletions, each with the local-edit and remote-push dates. Per-file
+outcomes (never all-or-nothing — one failing file doesn't block the
 others):
 
-| Per-file line                                               | When                                                                                   |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `pushed`                                                    | uploaded; manifest stamped only after confirmed success                                |
-| `skipped (unchanged)`                                       | local hash matches last sync                                                           |
-| `REFUSED (conflict: …)`                                     | changed locally **and** remotely since last sync — needs `--force`                     |
-| `REFUSED (changed remotely only — run`vsync pull`first, …)` | only the backend changed; pushing would destroy the other machine's work for zero gain |
-| `skipped (no local file)`                                   | tracked but deleted locally — push never deletes remote copies                         |
-| `FAILED (…)`                                                | backend error; the manifest stays accurate for everything that did upload              |
+| Per-file line                                  | When                                                                        |
+| ---------------------------------------------- | --------------------------------------------------------------------------- |
+| `pushed`                                       | uploaded — new on the backend, or overwriting a differing remote copy       |
+| `deleted on the backend (was missing locally)` | the local file was deleted; push mirrors that deletion remotely             |
+| `skipped (unchanged)`                          | local content matches the backend                                           |
+| `skipped (no local copy, no remote copy)`      | exists nowhere; nothing to do                                               |
+| `FAILED (…)`                                   | backend error; the remote index stays accurate for everything that uploaded |
 
-If anything was refused or failed, the command exits `1` with a summary
-(`[vsync] Push incomplete — …`) even though the successful uploads stand.
+After any successful run, the remote index (`.vsync-index.json` on the
+backend) is rewritten to describe exactly what the backend now holds —
+only successful transfers are recorded, so a partial failure never
+lies. Any failure exits `1` with `[vsync] Push incomplete — …` even
+though the successful uploads stand.
 
 While transfers run, a spinner names the file in flight
 (`⠋ Uploading dump.sql (330 KB)`) so long uploads visibly aren't stuck;
@@ -445,60 +458,72 @@ per file instead.
 
 ### Flags
 
-| Flag          | Effect                                                                                                                                                                                 |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-f, --force` | Overwrite the remote copy with your local version for refused files. Prints a loud `WARNING: --force …` naming every file whose remote-only changes will be lost **before** uploading. |
+| Flag          | Effect                                                             |
+| ------------- | ------------------------------------------------------------------ |
+| `-y, --yes`   | Skip the confirmation prompt (also implied by `--json`/piped runs) |
+| `-f, --force` | Legacy alias for `--yes`                                           |
 
 ### Example
 
 ```console
 $ vsync push
 Project 'my-project' (backend: s3) — 3 tracked file(s)
+Upload (new on the backend):
+  config.local.json (local edited 2026-08-16 09:41)
+Upload (OVERWRITE the remote copy — local wins):
+  .env (local edited 2026-08-16 09:41, remote pushed 2026-08-15 10:22)
+? Proceed with push? Yes
   .env — pushed
   .env.production — skipped (unchanged)
-  config.local.json — REFUSED (changed remotely only — run `vsync pull` first, or --force to overwrite)
-Summary: 1 pushed, 1 skipped (unchanged), 1 refused (remote changed)
-[vsync] Push incomplete — 1 changed remotely (pull first, or --force). The manifest records only successful uploads.
+  config.local.json — pushed
+Summary: 2 pushed, 1 skipped (unchanged)
 ```
 
 ---
 
 ## `vsync pull`
 
-Download tracked files that changed on the backend since the last sync.
-Mirror of `push`, opposite direction. Per-file outcomes:
+Make local match the backend (mirror of `push`). Downloads files whose
+remote copy differs from local and files missing locally (restored);
+local files with no remote copy are reported, never deleted. Interactive
+runs show the plan (overwrites and restores, with dates on both sides)
+and ask for confirmation first. Per-file outcomes:
 
-| Per-file line                                              | When                                                                                                                                                                          |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pulled`                                                   | downloaded; a missing local file is noted `(restored)`                                                                                                                        |
-| `skipped (unchanged)`                                      | local hash matches last sync                                                                                                                                                  |
-| `REFUSED (conflict: …)`                                    | both sides changed — needs `--force`                                                                                                                                          |
-| `REFUSED (changed locally only — run`vsync push`first, …)` | only your copy changed; pulling would overwrite local work with a remote copy identical to the last sync                                                                      |
-| `skipped (no remote copy)`                                 | never pushed (`never pushed`), deleted on the backend (`deleted on the backend — push to restore, or`vsync rm`to untrack`), or missing on both sides (`no local copy either`) |
+| Per-file line                                                       | When                                                  |
+| ------------------------------------------------------------------- | ----------------------------------------------------- |
+| `pulled (local overwritten)`                                        | the remote copy differs — local replaced, remote wins |
+| `restored (was missing locally)`                                    | no local file; fetched from the backend               |
+| `skipped (unchanged)`                                               | local content matches the backend                     |
+| `skipped (no remote copy — push to upload, or`vsync rm`to untrack)` | not on the backend                                    |
+| `skipped (no local copy, no remote copy)`                           | exists nowhere                                        |
+| `FAILED (…)`                                                        | backend error                                         |
 
 A fresh `git clone` (which carries `.vsync/` but none of the secret
 files) shows every tracked file as _missing locally_ — one `vsync pull`
 restores them all. Transfers show the same spinner as `push`
-(`⠋ Downloading x…`).
-
-Same exit-code behavior as `push`: refused/failed files → exit `1`, with
-successful downloads still applied and recorded.
+(`⠋ Downloading x…`). `pull` never touches the remote index — the
+backend didn't change. Any failure exits `1` (`[vsync] Pull incomplete —
+…`) with successful downloads still applied.
 
 ### Flags
 
-| Flag          | Effect                                                                                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-f, --force` | Overwrite your **local** files with the remote version for refused files, with a loud pre-download warning naming what local-only changes will be lost. |
+| Flag          | Effect                                                             |
+| ------------- | ------------------------------------------------------------------ |
+| `-y, --yes`   | Skip the confirmation prompt (also implied by `--json`/piped runs) |
+| `-f, --force` | Legacy alias for `--yes`                                           |
 
 ### Example
 
 ```console
 $ vsync pull
 Project 'my-project' (backend: s3) — 3 tracked file(s)
-  .env — pulled
-  .env.production — pulled (restored)
+Download (OVERWRITE the local file — remote wins):
+  .env (local edited 2026-08-16 08:02, remote pushed 2026-08-16 09:58)
+? Proceed with pull? Yes
+  .env — pulled (local overwritten)
+  .env.production — restored (was missing locally)
   config.local.json — skipped (unchanged)
-Summary: 2 pulled, 1 skipped (unchanged)
+Summary: 1 pulled, 1 restored, 1 skipped (unchanged)
 ```
 
 ---
@@ -587,17 +612,17 @@ failure; its per-file results still print first).
 
 ### JSON shapes per command
 
-| Command         | Shape (top-level keys)                                                                                                                                           |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`        | `{projectId, backend, files: [{path, status, note?}]}` — `status` ∈ `conflict`/`local-modified`/`remote-modified`/`missing-locally`/`remote-missing`/`unchanged` |
-| `diff`          | `{projectId, backend, files: [{path, status}], candidates: [{path, size, classification, rule?}], patches?}` — `patches` only with `--show-values`               |
-| `list`          | `{projects: [{projectId, backend, fileCount\|null, linked, path?, lastSyncedAt?, missingOnDisk?}], unreachable: [string]}`                                       |
-| `init`          | `{projectId, backend, files: [string]}`; `init --list` → `{candidates: [...]}`                                                                                   |
-| `link`          | `{projectId, backend, files: [string], pull?}` — `pull` (a full pull result) present only with `--pull`                                                          |
-| `push` / `pull` | `{projectId, backend, files: [{path, outcome, note?}], summary: {<outcome>: count}}`                                                                             |
-| `add` / `rm`    | `{added: [string]}` / `{removed: [string]}`                                                                                                                      |
-| `config`        | `{backend, saved: true, secretsStored: [string]}`; `config --show` → `{defaultBackend, profiles: {name: {backend, settings, secrets: [fieldNames]}}}`            |
-| `update`        | `{current, latest, updated}`                                                                                                                                     |
+| Command         | Shape (top-level keys)                                                                                                                                |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`        | `{projectId, backend, files: [{path, status, note?}]}` — `status` ∈ `differs`/`missing-locally`/`remote-missing`/`unchanged`                          |
+| `diff`          | `{projectId, backend, files: [{path, status}], candidates: [{path, size, classification, rule?}], patches?}` — `patches` only with `--show-values`    |
+| `list`          | `{projects: [{projectId, backend, fileCount\|null, linked, path?, lastSyncedAt?, missingOnDisk?}], unreachable: [string]}`                            |
+| `init`          | `{projectId, backend, files: [string]}`; `init --list` → `{candidates: [...]}`                                                                        |
+| `link`          | `{projectId, backend, files: [string], pull?}` — `pull` (a full pull result) present only with `--pull`                                               |
+| `push` / `pull` | `{projectId, backend, files: [{path, outcome, note?}], summary: {<outcome>: count}}`                                                                  |
+| `add` / `rm`    | `{added: [string]}` / `{removed: [string]}`                                                                                                           |
+| `config`        | `{backend, saved: true, secretsStored: [string]}`; `config --show` → `{defaultBackend, profiles: {name: {backend, settings, secrets: [fieldNames]}}}` |
+| `update`        | `{current, latest, updated}`                                                                                                                          |
 
 Secret values never appear in any JSON output — `config --show` lists
 secret field _names_ only, `status`/`diff` carry paths and statuses only,
@@ -612,7 +637,7 @@ $ vsync status --json
   "projectId": "my-project",
   "backend": "s3",
   "files": [
-    { "path": ".env", "status": "local-modified" },
+    { "path": ".env", "status": "differs" },
     { "path": ".env.production", "status": "unchanged" }
   ]
 }

@@ -3,7 +3,6 @@ import { stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { scanCandidates } from "../core/candidateScanner.js";
 import { readGlobalConfig, upsertProjectEntry, writeGlobalConfig } from "../core/globalConfig.js";
-import { hashFile } from "../core/hash.js";
 import { readManifest, writeManifest, type ManifestFileEntry } from "../core/manifest.js";
 import { availableBackends, createBackend } from "../storage/registry.js";
 import type { BackendConfig } from "../storage/types.js";
@@ -180,17 +179,7 @@ export async function runInitCommand(
     selected = [];
   }
 
-  const files: ManifestFileEntry[] = [];
-  for (const path of selected) {
-    const abs = join(projectRoot, path);
-    const info = await stat(abs);
-    files.push({
-      path,
-      hash: await hashFile(abs),
-      size: info.size,
-      mtimeLocal: info.mtime.toISOString(),
-    });
-  }
+  const files: ManifestFileEntry[] = selected.map((path) => ({ path }));
 
   await writeManifest(projectRoot, { projectId, backend, files });
   // The manifest lists secret paths — it must never reach git. Cross-device

@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  detectConflict,
   manifestPath,
   readManifest,
   removeFileEntry,
@@ -23,18 +22,8 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-function entry(
-  path: string,
-  hash: string,
-  overrides: Partial<ManifestFileEntry> = {},
-): ManifestFileEntry {
-  return {
-    path,
-    hash,
-    size: 100,
-    mtimeLocal: "2026-08-15T10:22:00Z",
-    ...overrides,
-  };
+function entry(path: string): ManifestFileEntry {
+  return { path };
 }
 
 function freshManifest(): Manifest {
@@ -48,8 +37,8 @@ describe("readManifest / writeManifest", () => {
 
   it("round-trips a manifest through disk, creating .vsync/", async () => {
     const m = freshManifest();
-    upsertFileEntry(m, entry(".env", "sha256:aaa"));
-    upsertFileEntry(m, entry("config/local.json", "sha256:bbb"));
+    upsertFileEntry(m, entry(".env"));
+    upsertFileEntry(m, entry("config/local.json"));
     await writeManifest(root, m);
 
     const back = await readManifest(root);
@@ -58,6 +47,38 @@ describe("readManifest / writeManifest", () => {
     const raw = await readFile(manifestPath(root), "utf8");
     expect(raw).toContain('"projectId": "test-project"');
     expect(raw.endsWith("\n")).toBe(true);
+  });
+
+  it("strips legacy hash/size/mtime fields from pre-sidecar manifests on read", async () => {
+    // Old-model manifests carried per-file hash bookkeeping; the new model
+    // keeps all remote state in the backend index. Reading one must not
+    // resurrect the stale fields (and the next write drops them).
+    await writeFile(
+      manifestPath(root),
+      JSON.stringify({
+        projectId: "legacy",
+        backend: "local-fs",
+        files: [
+          {
+            path: ".env",
+            hash: "sha256:old",
+            size: 12,
+            mtimeLocal: "2026-08-15T10:22:00Z",
+            lastSyncedHash: "sha256:old",
+            lastSyncedAt: "2026-08-15T10:22:00Z",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const back = await readManifest(root);
+    expect(back!.files).toEqual([{ path: ".env" }]);
+
+    await writeManifest(root, back!);
+    const raw = await readFile(manifestPath(root), "utf8");
+    expect(raw).not.toContain("sha256");
+    expect(raw).not.toContain("lastSynced");
   });
 
   it("overwrites cleanly on re-write", async () => {
@@ -75,31 +96,29 @@ describe("readManifest / writeManifest", () => {
 describe("upsertFileEntry / removeFileEntry", () => {
   it("adds a new entry", () => {
     const m = freshManifest();
-    upsertFileEntry(m, entry(".env", "sha256:1"));
+    upsertFileEntry(m, entry(".env"));
     expect(m.files).toHaveLength(1);
     expect(m.files[0].path).toBe(".env");
   });
 
-  it("replaces an existing entry by path instead of duplicating", () => {
+  it("never duplicates an existing path", () => {
     const m = freshManifest();
-    upsertFileEntry(m, entry(".env", "sha256:1"));
-    upsertFileEntry(m, entry(".env", "sha256:2", { size: 250 }));
+    upsertFileEntry(m, entry(".env"));
+    upsertFileEntry(m, entry(".env"));
     expect(m.files).toHaveLength(1);
-    expect(m.files[0].hash).toBe("sha256:2");
-    expect(m.files[0].size).toBe(250);
   });
 
   it("keeps entries sorted by path regardless of insert order", () => {
     const m = freshManifest();
-    upsertFileEntry(m, entry("z-last.txt", "sha256:1"));
-    upsertFileEntry(m, entry(".env", "sha256:2"));
-    upsertFileEntry(m, entry("m-mid.json", "sha256:3"));
+    upsertFileEntry(m, entry("z-last.txt"));
+    upsertFileEntry(m, entry(".env"));
+    upsertFileEntry(m, entry("m-mid.json"));
     expect(m.files.map((f) => f.path)).toEqual([".env", "m-mid.json", "z-last.txt"]);
   });
 
   it("removes an existing entry and reports true", () => {
     const m = freshManifest();
-    upsertFileEntry(m, entry(".env", "sha256:1"));
+    upsertFileEntry(m, entry(".env"));
     expect(removeFileEntry(m, ".env")).toBe(true);
     expect(m.files).toHaveLength(0);
   });
@@ -107,41 +126,5 @@ describe("upsertFileEntry / removeFileEntry", () => {
   it("reports false when removing an untracked path", () => {
     const m = freshManifest();
     expect(removeFileEntry(m, "nope.txt")).toBe(false);
-  });
-});
-
-describe("detectConflict", () => {
-  const synced = entry(".env", "sha256:synced", {
-    lastSyncedHash: "sha256:synced",
-    lastSyncedAt: "2026-08-15T10:22:00Z",
-  });
-
-  it("unchanged when local and remote both match last synced", () => {
-    expect(detectConflict(synced, "sha256:synced")).toBe("unchanged");
-  });
-
-  it("local-modified when only the local hash moved", () => {
-    expect(detectConflict({ ...synced, hash: "sha256:newer" }, "sha256:synced")).toBe(
-      "local-modified",
-    );
-  });
-
-  it("remote-modified when only the remote hash moved", () => {
-    expect(detectConflict(synced, "sha256:remote-newer")).toBe("remote-modified");
-  });
-
-  it("conflict when both sides changed independently", () => {
-    expect(detectConflict({ ...synced, hash: "sha256:newer" }, "sha256:remote-newer")).toBe(
-      "conflict",
-    );
-  });
-
-  it("remote-missing when the backend has no copy", () => {
-    expect(detectConflict(synced, undefined)).toBe("remote-missing");
-  });
-
-  it("never-synced entry with a remote copy present is a conflict (both sides differ)", () => {
-    const never = entry(".env", "sha256:fresh");
-    expect(detectConflict(never, "sha256:whatever-is-remote")).toBe("conflict");
   });
 });

@@ -5,16 +5,21 @@ import { createTwoFilesPatch } from "diff";
 import { resolveBackend } from "../core/backendResolver.js";
 import { scanCandidates, type Candidate } from "../core/candidateScanner.js";
 import { readManifest, type Manifest } from "../core/manifest.js";
+import { fetchRemoteIndex } from "../core/remoteIndex.js";
 import { computeFileSyncStates, STATUS_SECTIONS } from "../core/syncState.js";
 import { remoteKeyFor } from "../utils/paths.js";
 import { withSpinner } from "../utils/progress.js";
 
 /**
- * `vsync diff` — tracked-file differences (paths only by default) plus an
- * untracked-candidates section reusing the init scanner. `--show-values`
- * opts into real content diffs: each differing tracked file is pulled to a
- * temp location and line-diffed against the local copy. Never on by
- * default — this is the one command that can print secret values.
+ * `vsync diff` — live tracked-file comparison (local content vs the
+ * backend's current state via the remote index), paths only by default,
+ * plus an untracked-candidates section reusing the init scanner.
+ *
+ * `--show-values` opts into real content diffs: each differing tracked
+ * file is pulled to a temp location and line-diffed against the local
+ * copy (`-` = remote, `+` = local). Binary files get a size/date summary
+ * instead of a patch. Never on by default — this is the one command that
+ * can print secret values.
  *
  * `--json` emits `{projectId, backend, files: [{path, status}], candidates,
  * patches?}` — `patches` (only with --show-values) carries the same
@@ -32,10 +37,10 @@ export async function runDiffCommand(
   }
   const backend = await resolveBackend(projectRoot, homeDir);
 
-  const remoteByKey = new Map(
-    (await backend.list(`${manifest.projectId}/`)).map((f) => [f.path, f]),
-  );
-  const states = await computeFileSyncStates(projectRoot, manifest, remoteByKey);
+  const index = (await withSpinner("Fetching remote index", () =>
+    fetchRemoteIndex(backend, manifest.projectId),
+  )) ?? { files: {} };
+  const states = await computeFileSyncStates(projectRoot, manifest, index);
 
   const differing = states.filter((s) => s.status !== "unchanged");
   const candidates = await untrackedCandidates(projectRoot, manifest);
@@ -96,12 +101,9 @@ export async function runDiffCommand(
 }
 
 /**
- * With `--show-values`: git-style content diffs for every non-unchanged
- * tracked file. `-` lines are the last-synced base version, `+` lines the
- * side that changed since (for a conflict, where neither side holds the
- * base, `-` is the stored copy and `+` the local one). Files missing on
- * one side (never pushed, deleted locally) get a note under their header
- * instead of a diff, never a crash.
+ * With `--show-values`: git-style content diffs for every differing file
+ * with a readable copy on both sides. `-` = remote, `+` = local. Binary
+ * files get a size-and-dates note instead of garbage patch lines.
  */
 async function showContentDiffs(
   projectRoot: string,
@@ -129,14 +131,18 @@ interface PatchResult {
   note?: string;
 }
 
+/** True when the buffer shouldn't be line-diffed (it would be garbage). */
+function looksBinary(buf: Buffer): boolean {
+  // A NUL byte in the first 8KB is the classic isText sniff — a lone BOM
+  // or stray high byte in a UTF-8 doc won't trip it.
+  return buf.subarray(0, 8192).includes(0);
+}
+
 /**
  * Builds one unified-diff string per differing file with both copies
- * available (shared by prose and `--json` modes). The diff's `-` side is
- * the last-synced base version, `+` the side that changed since (for a
- * conflict, where neither side holds the base, `-` is the stored copy
- * and `+` the local one). Files missing on one side (never pushed,
- * deleted locally, unreachable remote) get a note instead — same notes
- * the prose mode always printed.
+ * available (shared by prose and `--json` modes). `-` is the remote copy,
+ * `+` the local one. Binary files, and files missing on one side, get a
+ * note instead — never a crash.
  */
 async function collectPatches(
   projectRoot: string,
@@ -147,13 +153,13 @@ async function collectPatches(
   const scratch = await mkdtemp(join(tmpdir(), "vsync-diff-"));
   try {
     const results: PatchResult[] = [];
-    for (const { entry, status, remoteFile } of differing) {
-      const localText = await readFile(join(projectRoot, entry.path), "utf8").catch(() => null);
-      if (localText === null) {
+    for (const { entry, status, remote, currentSize } of differing) {
+      const localBuf = await readFile(join(projectRoot, entry.path)).catch(() => null);
+      if (localBuf === null) {
         results.push({ path: entry.path, status, note: "(no local copy)" });
         continue;
       }
-      if (!remoteFile) {
+      if (!remote) {
         results.push({
           path: entry.path,
           status,
@@ -162,12 +168,12 @@ async function collectPatches(
         continue;
       }
       const remoteCopy = join(scratch, entry.path.replace(/\//g, "_"));
-      let remoteText: string | null = null;
+      let remoteBuf: Buffer | null = null;
       try {
         await withSpinner(`Fetching remote copy of ${entry.path}`, () =>
           backend.pull(remoteKeyFor(projectId, entry.path), remoteCopy),
         );
-        remoteText = await readFile(remoteCopy, "utf8");
+        remoteBuf = await readFile(remoteCopy);
       } catch (err) {
         results.push({
           path: entry.path,
@@ -176,20 +182,21 @@ async function collectPatches(
         });
         continue;
       }
-      // The unchanged side still holds the last-synced (base) content —
-      // that side becomes the `-` half. A conflict has no base, so the
-      // stored copy is treated as the base.
-      const baseIsLocal = status === "remote-modified";
-      const [oldText, newText, oldLabel, newLabel] = baseIsLocal
-        ? ([localText, remoteText, "local", "remote"] as const)
-        : ([remoteText, localText, "remote", "local"] as const);
+      if (looksBinary(localBuf) || looksBinary(remoteBuf)) {
+        results.push({
+          path: entry.path,
+          status,
+          note: `(binary — local ${currentSize} B, remote ${remote.size} B pushed ${remote.pushedAt})`,
+        });
+        continue;
+      }
       const patch = createTwoFilesPatch(
         `a/${entry.path}`,
         `b/${entry.path}`,
-        oldText,
-        newText,
-        oldLabel,
-        newLabel,
+        remoteBuf.toString("utf8"),
+        localBuf.toString("utf8"),
+        "remote",
+        "local",
       );
       // Drop only the "=====" separator line — the ---/+++ header lines
       // carry the remote/local labels we want.

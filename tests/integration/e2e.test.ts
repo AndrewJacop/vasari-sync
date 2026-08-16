@@ -130,25 +130,21 @@ describe("vsync end-to-end — a full user session on local-fs", () => {
       const manifest = (await readManifest(projectRoot))!;
       expect(manifest.projectId).toBe("demo-app");
       expect(manifest.files.map((f) => f.path)).toEqual([".env", "local-notes.txt"]);
-      for (const entry of manifest.files) {
-        expect(entry.lastSyncedHash).toBeUndefined(); // tracked, never synced
-      }
+      // Manifest entries are a tracked-paths list — no sync state lives here.
       expect((await readGlobalConfig(home)).projects).toEqual([
         { projectId: "demo-app", path: projectRoot, backend: "local-fs", lastSyncedAt: undefined },
       ]);
 
-      // ── status: nothing synced yet ───────────────────────────────────
+      // ── status: nothing synced yet ─────────────────────────────────
       const status1 = await run("status", () => runStatusCommand(projectRoot, home));
       expect(status1).toContain("Project 'demo-app' (backend: local-fs) — 2 tracked file(s)");
-      expect(status1).toContain(
-        "Missing remotely (not on the backend — never pushed, or deleted there):",
-      );
-      expect(status1).toContain("  .env (not pushed yet)");
-      expect(status1).toContain("  local-notes.txt (not pushed yet)");
+      expect(status1).toContain("Not on remote (never pushed, or deleted there):");
+      expect(status1).toContain("  .env");
+      expect(status1).toContain("  local-notes.txt");
       expect(status1).not.toContain("In sync:"); // nothing synced yet
 
-      // ── push: first upload of both files ─────────────────────────────
-      const push1 = await run("push", () => runPushCommand(projectRoot, false, home));
+      // ── push: first upload of both files ───────────────────────────
+      const push1 = await run("push", () => runPushCommand(projectRoot, true, home));
       expect(push1).toContain("  .env — pushed");
       expect(push1).toContain("  local-notes.txt — pushed");
       expect(push1).toContain("Summary: 2 pushed");
@@ -156,33 +152,38 @@ describe("vsync end-to-end — a full user session on local-fs", () => {
         expect(await readFile(remotePathOf("demo-app", rel, remoteDir), "utf8")).toBe(
           await readFile(join(projectRoot, rel), "utf8"),
         );
-        const entry = (await readManifest(projectRoot))!.files.find((f) => f.path === rel)!;
-        expect(entry.lastSyncedHash).toBe(await hashFile(join(projectRoot, rel)));
-        expect(entry.lastSyncedAt).toBeTruthy();
       }
+      // The remote index records both files with their real hashes.
+      const index1 = JSON.parse(
+        await readFile(join(remoteDir, "demo-app", ".vsync-index.json"), "utf8"),
+      ) as { files: Record<string, { hash: string }> };
+      expect(index1.files[".env"].hash).toBe(await hashFile(join(projectRoot, ".env")));
+      expect(index1.files["local-notes.txt"].hash).toBe(
+        await hashFile(join(projectRoot, "local-notes.txt")),
+      );
       expect((await readGlobalConfig(home)).projects[0].lastSyncedAt).toBeTruthy();
 
       // ── the user edits .env ──────────────────────────────────────────
       await writeFile(join(projectRoot, ".env"), "A=1\nB=2\nC=3\n");
 
-      // ── status: shows the local modification ─────────────────────────
+      // ── status: shows the local modification ───────────────────────
       const status2 = await run("status", () => runStatusCommand(projectRoot, home));
-      expect(status2).toContain("Changed locally (not yet pushed):");
+      expect(status2).toContain("Differ (local ≠ remote — push or pull to align):");
       expect(status2).toContain("  .env");
       expect(status2).toContain("In sync:");
       expect(status2).toContain("  local-notes.txt");
 
-      // ── diff: paths only by default + untracked candidates ───────────
+      // ── diff: paths only by default + untracked candidates ───────
       const diff1 = await run("diff", () => runDiffCommand(projectRoot, false, home));
-      expect(diff1).toContain("Changed locally (not yet pushed):");
+      expect(diff1).toContain("Differ (local ≠ remote — push or pull to align):");
       expect(diff1).toContain("  .env");
       expect(diff1).toContain("Untracked candidates (same scan as `vsync init`):");
       expect(diff1).toMatch(/extra\.key \(\d+ bytes\) — suggested \(pattern:\*\.key\)/);
       expect(diff1).not.toContain("C=3"); // values hidden without --show-values
       expect(diff1).not.toContain("node_modules"); // suppressed dirs never listed
 
-      // ── push again: only the modified file travels ───────────────────
-      const push2 = await run("push", () => runPushCommand(projectRoot, false, home));
+      // ── push again: only the modified file travels ─────────────
+      const push2 = await run("push", () => runPushCommand(projectRoot, true, home));
       expect(push2).toMatch(/\.env — pushed/);
       expect(push2).toMatch(/local-notes\.txt — skipped \(unchanged\)/);
       expect(push2).toContain("Summary: 1 pushed, 1 skipped (unchanged)");
@@ -200,7 +201,7 @@ describe("vsync end-to-end — a full user session on local-fs", () => {
         "local-notes.txt",
       ]);
 
-      const push3 = await run("push", () => runPushCommand(projectRoot, false, home));
+      const push3 = await run("push", () => runPushCommand(projectRoot, true, home));
       expect(push3).toMatch(/extra\.key — pushed/);
       expect(push3).toContain("Summary: 1 pushed, 2 skipped (unchanged)");
       expect(await readFile(remotePathOf("demo-app", "extra.key", remoteDir), "utf8")).toBe(
@@ -237,26 +238,21 @@ describe("vsync end-to-end — a full user session on local-fs", () => {
       await expect(stat(join(cloneRoot, "extra.key"))).rejects.toThrow();
 
       const pull1 = await run("pull   (in the fresh clone)", () =>
-        runPullCommand(cloneRoot, false, home),
+        runPullCommand(cloneRoot, true, home),
       );
       expect(pull1).toContain("Project 'demo-app' (backend: local-fs) — 2 tracked file(s)");
-      expect(pull1).toContain("  .env — pulled (restored)");
-      expect(pull1).toContain("  extra.key — pulled (restored)");
-      expect(pull1).toContain("Summary: 2 pulled");
+      expect(pull1).toContain("  .env — restored (was missing locally)");
+      expect(pull1).toContain("  extra.key — restored (was missing locally)");
+      expect(pull1).toContain("Summary: 2 restored");
       // The clone reconstructed machine A's exact content.
       expect(await readFile(join(cloneRoot, ".env"), "utf8")).toBe("A=1\nB=2\nC=3\n");
       expect(await readFile(join(cloneRoot, "extra.key"), "utf8")).toBe("api-key-xyz\n");
-      const cloneManifest = (await readManifest(cloneRoot))!;
-      for (const entry of cloneManifest.files) {
-        expect(entry.lastSyncedHash).toBe(await hashFile(join(cloneRoot, entry.path)));
-        expect(entry.lastSyncedAt).toBeTruthy();
-      }
       // Untracked by then — the clone must NOT reconstruct local-notes.txt.
       await expect(stat(join(cloneRoot, "local-notes.txt"))).rejects.toThrow();
 
       // Clone is now in sync: a second pull is a clean no-op.
       const pull2 = await run("pull   (in the fresh clone)", () =>
-        runPullCommand(cloneRoot, false, home),
+        runPullCommand(cloneRoot, true, home),
       );
       expect(pull2).toContain("Summary: 2 skipped (unchanged)");
 

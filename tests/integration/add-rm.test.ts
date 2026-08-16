@@ -1,12 +1,11 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runAddCommand } from "../../src/commands/add.js";
 import { runRmCommand } from "../../src/commands/rm.js";
-import { hashFile } from "../../src/core/hash.js";
 import { readManifest, writeManifest, type ManifestFileEntry } from "../../src/core/manifest.js";
 
 const execFileAsync = promisify(execFile);
@@ -25,17 +24,7 @@ async function makeProject(name: string, tracked: string[] = []): Promise<string
   await mkdir(join(root, "sub"), { recursive: true });
   await writeFile(join(root, "sub", "app.local.json"), '{ "debug": true }\n');
 
-  const files: ManifestFileEntry[] = [];
-  for (const rel of tracked) {
-    const abs = join(root, rel);
-    const info = await stat(abs);
-    files.push({
-      path: rel,
-      hash: await hashFile(abs),
-      size: info.size,
-      mtimeLocal: info.mtime.toISOString(),
-    });
-  }
+  const files: ManifestFileEntry[] = tracked.map((path) => ({ path }));
   await writeManifest(root, { projectId: name, backend: "local-fs", files });
   return root;
 }
@@ -59,14 +48,8 @@ describe("vsync add", () => {
 
     const manifest = await readManifest(projectRoot);
     expect(manifest!.files).toHaveLength(1);
-    const entry = manifest!.files[0];
-    expect(entry.path).toBe("local-notes.txt");
-    expect(entry.hash).toBe(await hashFile(join(projectRoot, "local-notes.txt")));
-    expect(entry.size).toBe(16);
-    expect(entry.mtimeLocal).toBeTypeOf("string");
-    // add never syncs — no lastSynced fields until push/pull runs.
-    expect(entry.lastSyncedHash).toBeUndefined();
-    expect(entry.lastSyncedAt).toBeUndefined();
+    // The manifest is a tracked-paths list — no hash bookkeeping lives here.
+    expect(manifest!.files[0]).toEqual({ path: "local-notes.txt" });
 
     expect(console.log).toHaveBeenCalledWith(
       expect.stringContaining("Added 1 file(s) to tracking: local-notes.txt"),

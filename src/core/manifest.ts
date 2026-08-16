@@ -1,30 +1,24 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-/** One tracked file, as stored in `.vsync/manifest.json`. */
+/**
+ * One tracked file, as stored in `.vsync/manifest.json`. The manifest is
+ * purely the LOCAL list of tracked paths — all hash/state bookkeeping
+ * lives in the backend-side index (`core/remoteIndex.ts`), which is the
+ * remote's source of truth. Entries from pre-sidecar manifests carried
+ * hash/size/mtime fields; those are ignored on read and dropped on the
+ * next write.
+ */
 export interface ManifestFileEntry {
   /** Path relative to the project root, posix-style. */
   path: string;
-  /** Last known hash of the local file ("sha256:<hex>"). */
-  hash: string;
-  size: number;
-  /** Last observed local mtime, ISO date. */
-  mtimeLocal: string;
-  /** Hash of the version last successfully pushed/pulled. Undefined until first sync. */
-  lastSyncedHash?: string;
-  /** When that sync happened, ISO date. */
-  lastSyncedAt?: string;
 }
 
-/** Manifest stored at `.vsync/manifest.json`, checked into git. */
 export interface Manifest {
   projectId: string;
   backend: string;
   files: ManifestFileEntry[];
 }
-
-export type SyncStatus =
-  "unchanged" | "local-modified" | "remote-modified" | "remote-missing" | "conflict";
 
 export function manifestPath(projectRoot: string): string {
   return join(projectRoot, ".vsync", "manifest.json");
@@ -40,7 +34,7 @@ export async function readManifest(projectRoot: string): Promise<Manifest | null
     throw err;
   }
   // A corrupt manifest must fail loudly, not silently reset tracking.
-  let parsed: unknown;
+  let parsed: { projectId?: unknown; backend?: unknown; files?: unknown };
   try {
     parsed = JSON.parse(raw);
   } catch {
@@ -48,7 +42,13 @@ export async function readManifest(projectRoot: string): Promise<Manifest | null
       `Corrupt manifest at ${manifestPath(projectRoot)} — edit or delete it manually, then re-run.`,
     );
   }
-  return parsed as Manifest;
+  return {
+    projectId: String(parsed.projectId),
+    backend: String(parsed.backend),
+    files: Array.isArray(parsed.files)
+      ? parsed.files.map((f: { path?: unknown }) => ({ path: String(f?.path) }))
+      : [],
+  };
 }
 
 /** Writes the manifest, creating `.vsync/` if needed. */
@@ -58,12 +58,9 @@ export async function writeManifest(projectRoot: string, manifest: Manifest): Pr
   await writeFile(target, JSON.stringify(manifest, null, 2) + "\n", "utf8");
 }
 
-/** Adds or replaces (by path) an entry; keeps files deterministically sorted. */
+/** Adds an entry (by path); keeps files deterministically sorted. */
 export function upsertFileEntry(manifest: Manifest, entry: ManifestFileEntry): void {
-  const existing = manifest.files.find((f) => f.path === entry.path);
-  if (existing) {
-    Object.assign(existing, entry);
-  } else {
+  if (!manifest.files.some((f) => f.path === entry.path)) {
     manifest.files.push(entry);
   }
   manifest.files.sort((a, b) => (a.path < b.path ? -1 : 1));
@@ -74,26 +71,4 @@ export function removeFileEntry(manifest: Manifest, path: string): boolean {
   const before = manifest.files.length;
   manifest.files = manifest.files.filter((f) => f.path !== path);
   return manifest.files.length < before;
-}
-
-/**
- * Categorizes a tracked file against the backend's current remote hash.
- *
- * Conflict = both sides changed independently since the last successful
- * sync. A never-synced entry (no lastSyncedHash) counts as "changed" on
- * both sides by definition — if a remote copy already exists, that's a
- * genuine both-sides-differ state and push/pull should refuse without
- * --force, which is the safe default.
- */
-export function detectConflict(
-  entry: ManifestFileEntry,
-  remoteCurrentHash: string | undefined,
-): SyncStatus {
-  if (remoteCurrentHash === undefined) return "remote-missing";
-  const localChanged = entry.hash !== entry.lastSyncedHash;
-  const remoteChanged = remoteCurrentHash !== entry.lastSyncedHash;
-  if (localChanged && remoteChanged) return "conflict";
-  if (localChanged) return "local-modified";
-  if (remoteChanged) return "remote-modified";
-  return "unchanged";
 }

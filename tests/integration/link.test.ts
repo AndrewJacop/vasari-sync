@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
@@ -37,7 +37,12 @@ vi.mock("../../src/storage/handlers/github-repo.js", () => {
       return [{ path: "my-app/.env", size: 3, etagOrHash: "sha256:abc" }];
     }
     async pull() {
-      /* not exercised — pull is declined in this test */
+      // Contract-faithful: no index on this fake backend → not-found, so
+      // link falls back to the listing path (exactly what this test wants).
+      throw new Error("Remote file not found: my-app/.vsync-index.json");
+    }
+    async push() {
+      /* not exercised */
     }
   }
   return { GithubRepoHandler: FakeGithubRepoHandler };
@@ -45,10 +50,10 @@ vi.mock("../../src/storage/handlers/github-repo.js", () => {
 
 import { confirm } from "@inquirer/prompts";
 import { runLinkCommand } from "../../src/commands/link.js";
-import { readManifest } from "../../src/core/manifest.js";
+import { runPushCommand } from "../../src/commands/push.js";
+import { readManifest, writeManifest } from "../../src/core/manifest.js";
 import { readGlobalConfig } from "../../src/core/globalConfig.js";
 import { GithubRepoHandler } from "../../src/storage/handlers/github-repo.js";
-import { remoteKeyFor } from "../../src/utils/paths.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -76,9 +81,6 @@ beforeEach(async () => {
     const abs = join(machineA.root, rel);
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, content);
-    const dest = join(remoteDir, remoteKeyFor(machineA.id, rel));
-    await mkdir(dirname(dest), { recursive: true });
-    await copyFile(abs, dest);
   }
 
   await mkdir(join(homeDir, ".vsync"), { recursive: true });
@@ -90,6 +92,15 @@ beforeEach(async () => {
       projects: [],
     }),
   );
+
+  // Machine A pushed for real: remote copies AND the sidecar index — the
+  // state a link on machine B actually starts from.
+  await writeManifest(machineA.root, {
+    projectId: machineA.id,
+    backend: "local-fs",
+    files: Object.keys(machineA.files).map((path) => ({ path })),
+  });
+  await runPushCommand(machineA.root, true, homeDir, "silent");
 });
 
 afterEach(async () => {
@@ -108,26 +119,23 @@ async function freshClone(): Promise<string> {
 }
 
 describe("vsync link", () => {
-  it("rebuilds the manifest from the backend and pulls into a fresh clone", async () => {
+  it("rebuilds the manifest from the backend index and pulls into a fresh clone", async () => {
     const clone = await freshClone();
     q.answers = [true /* pull now? */];
 
     await runLinkCommand(clone, machineA.id, homeDir);
 
-    // Manifest rebuilt from the backend listing — paths, no stale hashes.
+    // Manifest rebuilt from the remote index — paths only, no stale hashes.
     const manifest = await readManifest(clone);
     expect(manifest?.projectId).toBe(machineA.id);
     expect(manifest?.backend).toBe("local-fs");
-    expect(manifest?.files.map((f) => f.path).sort()).toEqual([".env", "local-notes.txt"]);
+    expect(manifest?.files).toEqual([{ path: ".env" }, { path: "local-notes.txt" }]);
 
     // Pull ran: file contents match machine A's.
     expect(await readFile(join(clone, ".env"), "utf8")).toBe(machineA.files[".env"]);
     expect(await readFile(join(clone, "local-notes.txt"), "utf8")).toBe(
       machineA.files["local-notes.txt"],
     );
-    // Pull stamped real sync state over link's placeholders.
-    const pulled = (await readManifest(clone))!.files;
-    expect(pulled.every((f) => f.hash.startsWith("sha256:") && f.lastSyncedHash)).toBe(true);
 
     // Registered globally, so `vsync list` sees it on machine B.
     const global = await readGlobalConfig(homeDir);
@@ -137,6 +145,21 @@ describe("vsync link", () => {
 
     // The manifest is kept out of git: .gitignore carries .vsync/.
     expect(await readFile(join(clone, ".gitignore"), "utf8")).toContain(".vsync/");
+  });
+
+  it("listing fallback: rebuilds from the raw file listing when no index exists (pre-sidecar backend)", async () => {
+    // Wipe the index, leaving only the pushed files — a backend written by
+    // an older vsync. Link must still work via backend.list().
+    await rm(join(remoteDir, machineA.id, ".vsync-index.json"));
+    const clone = await freshClone();
+    q.answers = [false /* pull now? */];
+
+    await runLinkCommand(clone, machineA.id, homeDir);
+
+    expect((await readManifest(clone))?.files.map((f) => f.path).sort()).toEqual([
+      ".env",
+      "local-notes.txt",
+    ]);
   });
 
   it("skips the pull when declined — manifest still rebuilt, no files written", async () => {
@@ -227,8 +250,6 @@ describe("vsync link", () => {
 
     expect(confirm).not.toHaveBeenCalled();
     expect(await readFile(join(clone, ".env"), "utf8")).toBe(machineA.files[".env"]);
-    const pulled = (await readManifest(clone))!.files;
-    expect(pulled.every((f) => f.hash.startsWith("sha256:") && f.lastSyncedHash)).toBe(true);
   });
 
   it("--json --pull: one object with the nested pull result, no prose", async () => {
@@ -251,7 +272,7 @@ describe("vsync link", () => {
     };
     expect(parsed.projectId).toBe(machineA.id);
     expect(parsed.files.sort()).toEqual([".env", "local-notes.txt"]);
-    expect(parsed.pull?.files.every((f) => f.outcome === "pulled")).toBe(true);
+    expect(parsed.pull?.files.every((f) => f.outcome === "restored")).toBe(true);
   });
 
   it("--json without --pull: link result only, no pull key", async () => {

@@ -150,14 +150,17 @@ program
 
 program
   .command("push")
-  .description("Upload tracked files that changed since the last sync")
-  .option("-f, --force", "overwrite remote-only changes (local version wins)")
+  .description(
+    "Upload tracked files that changed (local overwrites remote; missing local files are deleted remotely)",
+  )
+  .option("-y, --yes", "skip the confirmation prompt")
+  .option("-f, --force", "legacy alias for --yes")
   .option("--json", "machine-readable output")
-  .action(async (options: { force?: boolean; json?: boolean }) => {
+  .action(async (options: { yes?: boolean; force?: boolean; json?: boolean }) => {
     try {
       await runPushCommand(
         process.cwd(),
-        options.force === true,
+        options.yes === true || options.force === true,
         undefined,
         options.json === true ? "json" : "prose",
       );
@@ -169,14 +172,17 @@ program
 
 program
   .command("pull")
-  .description("Download tracked files that changed on the backend since the last sync")
-  .option("-f, --force", "overwrite local-only changes (remote version wins)")
+  .description(
+    "Download tracked files that changed (remote overwrites local; files missing locally are restored)",
+  )
+  .option("-y, --yes", "skip the confirmation prompt")
+  .option("-f, --force", "legacy alias for --yes")
   .option("--json", "machine-readable output")
-  .action(async (options: { force?: boolean; json?: boolean }) => {
+  .action(async (options: { yes?: boolean; force?: boolean; json?: boolean }) => {
     try {
       await runPullCommand(
         process.cwd(),
-        options.force === true,
+        options.yes === true || options.force === true,
         undefined,
         options.json === true ? "json" : "prose",
       );

@@ -95,9 +95,13 @@ vsync link my-project   # rebuild the manifest from the backend, then pull
 ```
 
 From then on, the loop on any machine is: work → `vsync push`; sit down
-elsewhere → `vsync pull`. If both sides changed the same file,
-`vsync status` flags a **conflict** and `push`/`pull` refuse that file
-until you resolve it or explicitly pass `--force`.
+elsewhere → `vsync pull`. Comparison is **live two-way**: the current
+local files against the backend's current state (tracked in a small
+`.vsync-index.json` sidecar vsync keeps on the backend). A differing file
+is simply overwritten in the direction you choose — `push` makes the
+remote match local (files deleted locally are deleted remotely), `pull`
+makes local match the remote. Both show the full plan and ask for
+confirmation first (`--yes` to skip).
 
 Full command reference: [docs/commands.md](docs/commands.md).
 
@@ -120,10 +124,11 @@ several projects can share one bucket/server without colliding.
 
 ## What lives where
 
-| Path                             | Contents                                                                                       | Committed to git?                              |
-| -------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `.vsync/manifest.json` (project) | backend name, tracked paths, content hashes, last-synced times                                 | **no** — git-ignored, rebuilt via `vsync link` |
-| `~/.vsync/config.json` (machine) | backend profiles, credentials (0600), local project registry (checkout paths for `vsync list`) | no                                             |
+| Path                                      | Contents                                                                                       | Committed to git?                              |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `.vsync/manifest.json` (project)          | backend name, tracked paths (a plain list — no hashes)                                         | **no** — git-ignored, rebuilt via `vsync link` |
+| `<projectId>/.vsync-index.json` (backend) | vsync's remote index: hash/size/push-time of every file on the backend                         | n/a — lives on the backend, never local        |
+| `~/.vsync/config.json` (machine)          | backend profiles, credentials (0600), local project registry (checkout paths for `vsync list`) | no                                             |
 
 ## Which files does `init` suggest?
 
@@ -172,7 +177,7 @@ detail plus exit 1.
 | `init`                                        | `--project-id <id>` (default: folder name), `--backend <name>` (default: global default), `--files a,b` (repeatable; omitted = track nothing), `--yes` (re-init), `--list` (print candidates and exit) |
 | `link`                                        | `--pull` (pull right after linking; without a TTY the pull is simply skipped — exit 0)                                                                                                                 |
 | `update`                                      | `-y/--yes` (without it and no TTY: error)                                                                                                                                                              |
-| `add`, `rm`, `status`, `diff`, `push`, `pull` | already non-interactive (`--force` on push/pull, `--show-values` on diff)                                                                                                                              |
+| `add`, `rm`, `status`, `diff`, `push`, `pull` | already non-interactive (`--yes` on push/pull, `--show-values` on diff)                                                                                                                                |
 
 ### Secrets for `config`
 
@@ -201,7 +206,7 @@ VSYNC_SECRET_SECRET_ACCESS_KEY=... \
 ### JSON shapes (stable; additive changes only)
 
 - `status` → `{projectId, backend, files: [{path, status, note?}]}`
-  — `status` ∈ `conflict | local-modified | remote-modified | missing-locally | remote-missing | unchanged`
+  — `status` ∈ `differs | missing-locally | remote-missing | unchanged`
 - `diff` → `{projectId, backend, files: [{path, status}], candidates: [{path, size, classification, rule?}], patches?: [{path, patch}]}` (`patches` only with `--show-values`)
 - `list` → `{projects: [{projectId, backend, fileCount|null, linked, path?, lastSyncedAt?, missingOnDisk?}], unreachable: [string]}`
 - `init` → `{projectId, backend, files: [string]}`; `init --list` → `{candidates: [...]}`

@@ -1,92 +1,92 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runPullCommand } from "../../src/commands/pull.js";
+import { runPushCommand } from "../../src/commands/push.js";
 import { readGlobalConfig } from "../../src/core/globalConfig.js";
 import { hashFile } from "../../src/core/hash.js";
-import {
-  manifestPath,
-  readManifest,
-  writeManifest,
-  type ManifestFileEntry,
-} from "../../src/core/manifest.js";
+import { writeManifest } from "../../src/core/manifest.js";
+import { indexKeyFor } from "../../src/core/remoteIndex.js";
 import { remoteKeyFor } from "../../src/utils/paths.js";
 
 const execFileAsync = promisify(execFile);
+
+/** Scripted prompts: pull asks for confirmation when interactive. */
+const q = vi.hoisted(() => ({ answers: [] as unknown[] }));
+vi.mock("@inquirer/prompts", () => ({
+  confirm: vi.fn(async () => q.answers.shift()),
+}));
+
+import { confirm } from "@inquirer/prompts";
 
 let projectRoot: string | undefined;
 let homeDir: string | undefined;
 let remoteDir: string | undefined;
 
-const DEFAULT_CONTENTS: Record<string, string> = {
-  ".env": "A=1\nB=2\n",
-  "local-notes.txt": "just some notes\n",
-  "steady.txt": "steady as she goes\n",
-  "sub/app.local.json": '{ "debug": true }\n',
-  "blocked/inner.txt": "inner content\n",
-  "fresh.txt": "fresh and never pushed\n",
-};
-
 /**
  * A real git project the way `vsync init` + a successful `push` leaves it,
- * backed by a local-fs backend. `pushed` files are copied to the remote
- * tree and their manifest entries get lastSyncedHash/lastSyncedAt stamped
- * — exactly the state a pull starts from.
+ * backed by a local-fs backend: real remote copies AND the remote index.
  */
-async function makeProject(
-  name: string,
-  tracked: string[],
-  pushed: string[] = [],
-  contents: Record<string, string> = {},
-): Promise<void> {
+async function makeProject(name: string, tracked: string[], pushed: string[] = []): Promise<void> {
   projectRoot = await mkdtemp(join(tmpdir(), `vsync-pull-${name}-`));
   homeDir = await mkdtemp(join(tmpdir(), `vsync-pull-${name}-home-`));
   remoteDir = await mkdtemp(join(tmpdir(), `vsync-pull-${name}-remote-`));
 
   await execFileAsync("git", ["init", "-q"], { cwd: projectRoot });
   await writeFile(join(projectRoot, ".gitignore"), ".env*\nlocal-notes.txt\nsteady.txt\n");
-
-  const fileContents = { ...DEFAULT_CONTENTS, ...contents };
-  for (const rel of tracked) {
-    const abs = join(projectRoot, rel);
-    await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, fileContents[rel]);
-  }
+  await writeFile(join(projectRoot, ".env"), "A=1\nB=2\n");
+  await writeFile(join(projectRoot, "local-notes.txt"), "just some notes\n");
+  await writeFile(join(projectRoot, "steady.txt"), "steady as she goes\n");
+  await mkdir(join(projectRoot, "sub"), { recursive: true });
+  await writeFile(join(projectRoot, "sub", "app.local.json"), '{ "debug": true }\n');
+  await mkdir(join(projectRoot, "blocked"), { recursive: true });
+  await writeFile(join(projectRoot, "blocked", "inner.txt"), "inner content\n");
+  await writeFile(join(projectRoot, "fresh.txt"), "fresh and never pushed\n");
 
   await writeGlobalProfile();
+  await writeManifest(projectRoot, {
+    projectId: name,
+    backend: "local-fs",
+    files: tracked.map((path) => ({ path })),
+  });
 
-  const files: ManifestFileEntry[] = [];
-  for (const rel of tracked) {
-    const abs = join(projectRoot, rel);
-    const info = await stat(abs);
-    files.push({
-      path: rel,
-      hash: await hashFile(abs),
-      size: info.size,
-      mtimeLocal: info.mtime.toISOString(),
-    });
-  }
-  await writeManifest(projectRoot, { projectId: name, backend: "local-fs", files });
-
-  for (const rel of pushed) {
-    const dest = remotePathOf(name, rel);
-    await mkdir(dirname(dest), { recursive: true });
-    await copyFile(join(projectRoot, rel), dest);
-    const manifest = (await readManifest(projectRoot))!;
-    const entry = manifest.files.find((f) => f.path === rel)!;
-    entry.lastSyncedHash = entry.hash;
-    entry.lastSyncedAt = new Date().toISOString();
-    await writeManifest(projectRoot, manifest);
+  if (pushed.length > 0) {
+    await runPushCommand(projectRoot, true, homeDir, "silent");
   }
 }
 
-/** Remote-side location of a tracked file — always via remoteKeyFor, never
- * a hand-joined projectId (a wrong ID is exactly how fixtures rot). */
+/** Remote-side location of a tracked file — always via remoteKeyFor. */
 function remotePathOf(name: string, rel: string): string {
   return join(remoteDir!, remoteKeyFor(name, rel));
+}
+
+/** Where the backend stores this project's sidecar index. */
+function indexPathOf(name: string): string {
+  return join(remoteDir!, indexKeyFor(name));
+}
+
+/**
+ * Simulates "the other machine pushed new content": writes the remote file
+ * AND updates its index entry — exactly what a real push does to the
+ * backend state pull compares against.
+ */
+async function setRemoteContent(name: string, rel: string, content: string): Promise<void> {
+  const dest = remotePathOf(name, rel);
+  await writeFile(dest, content);
+  const info = await stat(dest);
+  const indexPath = indexPathOf(name);
+  const index = JSON.parse(await readFile(indexPath, "utf8")) as {
+    files: Record<string, { hash: string; size: number; pushedAt: string }>;
+  };
+  index.files[rel] = {
+    hash: await hashFile(dest),
+    size: info.size,
+    pushedAt: new Date().toISOString(),
+  };
+  await writeFile(indexPath, JSON.stringify(index, null, 2) + "\n");
 }
 
 /** Minimal global config so backendResolver finds the profile + no secrets. */
@@ -105,7 +105,7 @@ async function writeGlobalProfile(): Promise<void> {
 /** Drives pull with console captured; `err` holds a thrown aggregate (if
  * any) instead of letting it escape — tests decide what to expect. */
 async function runPull(
-  force = false,
+  yes = false,
   output: "prose" | "json" | "silent" = "prose",
 ): Promise<{ out: string; warns: string[]; err?: unknown }> {
   const lines: string[] = [];
@@ -118,7 +118,7 @@ async function runPull(
   });
   let err: unknown;
   try {
-    await runPullCommand(projectRoot!, force, homeDir, output);
+    await runPullCommand(projectRoot!, yes, homeDir, output);
   } catch (e) {
     err = e;
   }
@@ -131,6 +131,7 @@ function errMsg(err: unknown): string {
 
 beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
+  Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
 });
 
 afterEach(async () => {
@@ -142,28 +143,27 @@ afterEach(async () => {
 });
 
 describe("vsync pull", () => {
-  it("clean pull of remotely-changed files downloads them, stamps the manifest, and registers the project", async () => {
+  it("downloads remotely-changed files, overwriting local — no refusal, no conflict states", async () => {
     const tracked = [".env", "local-notes.txt", "sub/app.local.json"];
     await makeProject("clean", tracked, tracked);
     // The other machine changed all three remote copies.
-    await writeFile(remotePathOf("clean", ".env"), "A=42\nB=2\n");
-    await writeFile(remotePathOf("clean", "local-notes.txt"), "remotely edited notes\n");
-    await writeFile(remotePathOf("clean", "sub/app.local.json"), '{ "debug": false }\n');
+    await setRemoteContent("clean", ".env", "A=42\nB=2\n");
+    await setRemoteContent("clean", "local-notes.txt", "remotely edited notes\n");
+    await setRemoteContent("clean", "sub/app.local.json", '{ "debug": false }\n');
+    // …and this machine ALSO edited .env locally: remote still wins on pull.
+    await writeFile(join(projectRoot!, ".env"), "LOCAL-EDIT\n");
 
     const { out, err } = await runPull();
 
     expect(err).toBeUndefined();
     for (const rel of tracked) {
-      // Local copy now equals the remote version exactly.
       expect(await readFile(join(projectRoot!, rel), "utf8")).toBe(
         await readFile(remotePathOf("clean", rel), "utf8"),
       );
-      // Manifest stamped with the pulled content's hash.
-      const entry = (await readManifest(projectRoot!))!.files.find((f) => f.path === rel)!;
-      expect(entry.lastSyncedHash).toBe(await hashFile(join(projectRoot!, rel)));
-      expect(entry.lastSyncedAt).toBeTruthy();
       expect(out).toMatch(new RegExp(`${rel.replace(/\//g, "\\/")} — pulled`));
     }
+    // The local-only edit to .env was overwritten by design (remote wins).
+    expect(await readFile(join(projectRoot!, ".env"), "utf8")).toBe("A=42\nB=2\n");
     // Global registry stamped for `vsync list`.
     const registry = (await readGlobalConfig(homeDir)).projects;
     expect(registry).toHaveLength(1);
@@ -176,9 +176,9 @@ describe("vsync pull", () => {
     expect(out).toContain("Summary: 3 pulled");
   });
 
-  it("is a no-op on unchanged files — nothing re-downloaded, manifest byte-identical", async () => {
+  it("is a no-op on unchanged files — nothing re-downloaded, registry untouched", async () => {
     await makeProject("noop", [".env", "steady.txt"], [".env", "steady.txt"]);
-    const manifestBefore = await readFile(manifestPath(projectRoot!), "utf8");
+    const registryBefore = (await readGlobalConfig(homeDir)).projects;
 
     const { out, err } = await runPull();
 
@@ -186,64 +186,14 @@ describe("vsync pull", () => {
     expect(out).toMatch(/\.env — skipped \(unchanged\)/);
     expect(out).toMatch(/steady\.txt — skipped \(unchanged\)/);
     expect(out).toContain("Summary: 2 skipped (unchanged)");
-    // No-op writes nothing: manifest content (incl. lastSyncedAt) identical.
-    expect(await readFile(manifestPath(projectRoot!), "utf8")).toBe(manifestBefore);
-    // Nothing pulled → the registry isn't touched either.
-    expect((await readGlobalConfig(homeDir)).projects).toHaveLength(0);
-  });
-
-  it("refuses a conflict (both sides changed) without --force — local and remote untouched", async () => {
-    await makeProject("conflict", [".env"], [".env"]);
-    const baseHash = (await readManifest(projectRoot!))!.files[0].lastSyncedHash;
-    await writeFile(join(projectRoot!, ".env"), "A=99\n"); // local side changes
-    await writeFile(remotePathOf("conflict", ".env"), "REMOTE=1\n"); // remote side changes
-
-    const { out, err } = await runPull();
-
-    expect(errMsg(err)).toMatch(/Pull incomplete — 1 conflicted \(needs --force\)/);
-    expect(out).toMatch(/\.env — REFUSED \(conflict/);
-    // Each side keeps its own version; manifest keeps the base hash.
-    expect(await readFile(join(projectRoot!, ".env"), "utf8")).toBe("A=99\n");
-    expect(await readFile(remotePathOf("conflict", ".env"), "utf8")).toBe("REMOTE=1\n");
-    expect((await readManifest(projectRoot!))!.files[0].lastSyncedHash).toBe(baseHash);
-  });
-
-  it("refuses to clobber a locally-modified file without --force (nothing gained by pulling)", async () => {
-    await makeProject("needspush", [".env"], [".env"]);
-    const baseHash = (await readManifest(projectRoot!))!.files[0].lastSyncedHash;
-    await writeFile(join(projectRoot!, ".env"), "A=99\n"); // local-only change
-
-    const { out, err } = await runPull();
-
-    expect(errMsg(err)).toMatch(/Pull incomplete — 1 changed locally/);
-    expect(out).toMatch(/\.env — REFUSED \(changed locally only/);
-    // Local edits survive; manifest keeps the base hash.
-    expect(await readFile(join(projectRoot!, ".env"), "utf8")).toBe("A=99\n");
-    expect((await readManifest(projectRoot!))!.files[0].lastSyncedHash).toBe(baseHash);
-  });
-
-  it("--force warns loudly, then overwrites the local copy with the remote version", async () => {
-    await makeProject("forced", [".env"], [".env"]);
-    await writeFile(join(projectRoot!, ".env"), "A=99\n");
-    await writeFile(remotePathOf("forced", ".env"), "REMOTE=1\n");
-
-    const { out, warns, err } = await runPull(true);
-
-    expect(err).toBeUndefined();
-    // The warning fires BEFORE anything downloads and names the cost.
-    expect(warns.join("\n")).toMatch(/WARNING: --force overwrites your LOCAL file/);
-    expect(warns.join("\n")).toMatch(/will be LOST: \.env/);
-    expect(out).toMatch(/\.env — pulled/);
-    // Remote version won; manifest stamped with its hash.
-    expect(await readFile(join(projectRoot!, ".env"), "utf8")).toBe("REMOTE=1\n");
-    const entry = (await readManifest(projectRoot!))!.files[0];
-    expect(entry.lastSyncedHash).toBe(await hashFile(join(projectRoot!, ".env")));
+    // The no-op pull left the registry exactly as the fixture push set it.
+    expect((await readGlobalConfig(homeDir)).projects).toEqual(registryBefore);
   });
 
   it("restores a locally-missing file from the backend (fresh-clone / deleted-locally case)", async () => {
     const tracked = [".env", "sub/app.local.json"];
     await makeProject("clone", tracked, tracked);
-    // Simulate machine B: manifest via git, tracked files absent locally.
+    // Simulate machine B: manifest present, tracked files absent locally.
     await rm(join(projectRoot!, ".env"));
     await rm(join(projectRoot!, "sub"), { recursive: true, force: true });
 
@@ -254,48 +204,72 @@ describe("vsync pull", () => {
       expect(await readFile(join(projectRoot!, rel), "utf8")).toBe(
         await readFile(remotePathOf("clone", rel), "utf8"),
       );
-      const entry = (await readManifest(projectRoot!))!.files.find((f) => f.path === rel)!;
-      expect(entry.lastSyncedHash).toBe(await hashFile(join(projectRoot!, rel)));
     }
-    expect(out).toMatch(/\.env — pulled \(restored\)/);
-    expect(out).toMatch(/sub\/app\.local\.json — pulled \(restored\)/);
-    expect(out).toContain("Summary: 2 pulled");
+    expect(out).toMatch(/\.env — restored/);
+    expect(out).toMatch(/sub\/app\.local\.json — restored/);
+    expect(out).toContain("Summary: 2 restored");
     // Restoring counts as syncing — the registry learns about this machine.
     expect((await readGlobalConfig(homeDir)).projects).toHaveLength(1);
   });
 
-  it("reports a remotely-missing file clearly (deleted on the backend) without crashing, still pulls others", async () => {
-    await makeProject("gone", [".env", "steady.txt", "fresh.txt"], [".env", "steady.txt"]);
-    // .env was deleted on the backend by another machine; fresh.txt was
-    // never pushed at all; steady.txt's remote copy changed.
-    await unlink(remotePathOf("gone", ".env"));
-    await writeFile(remotePathOf("gone", "steady.txt"), "remotely edited\n");
+  it("reports files with no remote copy clearly (deleted on backend) without crashing", async () => {
+    await makeProject("gone", [".env", "steady.txt"], [".env", "steady.txt"]);
+    // .env was deleted on the backend (index entry + file gone);
+    // steady.txt changed remotely.
+    const index = JSON.parse(await readFile(indexPathOf("gone"), "utf8")) as {
+      files: Record<string, unknown>;
+    };
+    delete index.files[".env"];
+    await rm(remotePathOf("gone", ".env"));
+    await writeFile(indexPathOf("gone"), JSON.stringify(index, null, 2) + "\n");
+    await setRemoteContent("gone", "steady.txt", "remotely edited\n");
 
     const { out, err } = await runPull();
 
-    // Reported clearly, NOT a crash and not even a failure exit.
+    // Reported clearly, NOT a crash and not even a failure exit. Local
+    // copies are never deleted by pull.
     expect(err).toBeUndefined();
-    expect(out).toMatch(/\.env — skipped \(no remote copy\) \(deleted on the backend/);
-    expect(out).toMatch(/fresh\.txt — skipped \(no remote copy\) \(never pushed\)/);
+    expect(out).toMatch(/\.env — skipped \(no remote copy/);
     expect(out).toMatch(/steady\.txt — pulled/);
-    expect(out).toContain("Summary: 1 pulled, 2 skipped (no remote copy)");
-    // Local copies untouched by the reports.
+    expect(out).toContain("Summary: 1 pulled, 1 skipped (not on remote)");
     expect(await readFile(join(projectRoot!, ".env"), "utf8")).toBe("A=1\nB=2\n");
-    expect(await readFile(join(projectRoot!, "fresh.txt"), "utf8")).toBe(
-      "fresh and never pushed\n",
-    );
   });
 
-  it("partial failure: a failed download leaves successful files stamped and the failed one untouched", async () => {
+  it("skips a tracked file that exists nowhere (no local copy, no remote copy)", async () => {
+    await makeProject("vanished", [".env", "steady.txt"]);
+    await rm(join(projectRoot!, ".env"));
+
+    const { out, err } = await runPull();
+
+    expect(err).toBeUndefined();
+    expect(out).toMatch(/\.env — skipped \(no local copy, no remote copy\)/);
+    // Never pushed → steady.txt is simply not on the remote either.
+    expect(out).toMatch(/steady\.txt — skipped \(no remote copy/);
+  });
+
+  it("asks for confirmation and aborts cleanly when declined (nothing downloads)", async () => {
+    await makeProject("confirm-no", [".env"], [".env"]);
+    await setRemoteContent("confirm-no", ".env", "REMOTE=1\n");
+    const localBefore = await readFile(join(projectRoot!, ".env"), "utf8");
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    q.answers = [false];
+
+    const { out, err } = await runPull();
+
+    expect(err).toBeUndefined();
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(out).toContain("Download (OVERWRITE the local file — remote wins):");
+    expect(out).toContain("Aborted — nothing was pulled.");
+    expect(await readFile(join(projectRoot!, ".env"), "utf8")).toBe(localBefore);
+  });
+
+  it("partial failure: a failed download leaves the failed file untouched, others pulled", async () => {
     await makeProject("partial", [".env", "blocked/inner.txt"], [".env", "blocked/inner.txt"]);
-    const innerBase = (await readManifest(projectRoot!))!.files.find(
-      (f) => f.path === "blocked/inner.txt",
-    )!.lastSyncedHash;
     // .env changed remotely (should pull). For blocked/inner.txt: delete the
     // local copy AND park a plain FILE at its parent-dir path — the local
     // mkdir in backend.pull then fails (EEXIST on POSIX, EPERM on Windows),
     // a genuine per-file backend error with no mocks involved.
-    await writeFile(remotePathOf("partial", ".env"), "A=42\nB=2\n");
+    await setRemoteContent("partial", ".env", "A=42\nB=2\n");
     await rm(join(projectRoot!, "blocked"), { recursive: true, force: true });
     await writeFile(join(projectRoot!, "blocked"), "not a directory\n");
 
@@ -304,12 +278,6 @@ describe("vsync pull", () => {
     expect(errMsg(err)).toMatch(/Pull incomplete — 1 failed to download/);
     expect(out).toMatch(/\.env — pulled/);
     expect(out).toMatch(/blocked\/inner\.txt — FAILED \(/);
-    // Per-file manifest accuracy, not all-or-nothing.
-    const manifest = (await readManifest(projectRoot!))!;
-    const envEntry = manifest.files.find((f) => f.path === ".env")!;
-    const innerEntry = manifest.files.find((f) => f.path === "blocked/inner.txt")!;
-    expect(envEntry.lastSyncedHash).toBe(await hashFile(join(projectRoot!, ".env")));
-    expect(innerEntry.lastSyncedHash).toBe(innerBase);
     // The remote copies are intact regardless of the local failure.
     expect(await readFile(remotePathOf("partial", "blocked/inner.txt"), "utf8")).toBe(
       "inner content\n",
@@ -335,9 +303,9 @@ describe("vsync pull", () => {
 });
 
 describe("vsync pull --json", () => {
-  it("emits one result object with per-file outcomes and notes", async () => {
+  it("emits one result object with per-file outcomes", async () => {
     await makeProject("json-clean", [".env", "steady.txt"], [".env", "steady.txt"]);
-    await writeFile(join(remoteDir!, "json-clean", ".env"), "REMOTE=1\n"); // remote-modified
+    await setRemoteContent("json-clean", ".env", "REMOTE=1\n");
 
     const { out, err } = await runPull(false, "json");
 
@@ -360,15 +328,15 @@ describe("vsync pull --json", () => {
   });
 
   it("prints the result BEFORE throwing on an incomplete pull", async () => {
-    await makeProject("json-conflict", [".env"], [".env"]);
-    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // both sides change
-    await writeFile(join(remoteDir!, "json-conflict", ".env"), "REMOTE=1\n");
+    await makeProject("json-fail", [".env", "blocked/inner.txt"], [".env", "blocked/inner.txt"]);
+    await rm(join(projectRoot!, "blocked"), { recursive: true, force: true });
+    await writeFile(join(projectRoot!, "blocked"), "not a directory\n");
 
     const { out, err } = await runPull(false, "json");
 
     expect(err).toBeInstanceOf(Error);
     expect(errMsg(err)).toMatch(/Pull incomplete/);
     const parsed = JSON.parse(out) as { files: { outcome: string }[] };
-    expect(parsed.files[0].outcome).toBe("conflicted");
+    expect(parsed.files.some((f) => f.outcome === "failed")).toBe(true);
   });
 });

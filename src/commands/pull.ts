@@ -1,67 +1,62 @@
-import { stat } from "node:fs/promises";
 import { join } from "node:path";
+import { confirm } from "@inquirer/prompts";
 import { resolveBackend } from "../core/backendResolver.js";
 import { readGlobalConfig, upsertProjectEntry, writeGlobalConfig } from "../core/globalConfig.js";
-import { hashFile } from "../core/hash.js";
-import { readManifest, writeManifest } from "../core/manifest.js";
+import { readManifest } from "../core/manifest.js";
+import { fetchRemoteIndex } from "../core/remoteIndex.js";
 import { computeFileSyncStates, type FileSyncState } from "../core/syncState.js";
-import { Spinner } from "../utils/progress.js";
 import { remoteKeyFor } from "../utils/paths.js";
+import { Spinner, withSpinner } from "../utils/progress.js";
+import { isNonInteractive } from "../utils/tty.js";
 import type { OutputMode } from "./push.js";
 
 /**
- * `vsync pull` — download tracked files that changed on the backend since
- * the last sync. Mirror of `push`, opposite direction.
+ * `vsync pull` — make local look like the remote (mirror semantics).
  *
- * Per-file semantics (never all-or-nothing):
+ * Per-file plan from the live local-vs-index comparison:
  * - unchanged → skipped;
- * - remote-modified → downloaded;
- * - missing-locally with a remote copy → downloaded (restore: fresh clone
- *   or locally deleted file);
- * - conflict (both sides changed) → REFUSED without `--force`;
- * - local-modified (local changed, remote didn't) → REFUSED without
- *   `--force` too — pulling would overwrite local changes with a remote
- *   copy identical to `lastSyncedHash`, pure data loss for zero gain
- *   (push is the right move there);
- * - remote-missing (deleted on the backend, or never pushed) → reported
- *   clearly, never a crash — the user must decide: push to restore the
- *   remote copy or `vsync rm` to stop tracking.
+ * - differs → local file OVERWRITTEN with the remote copy;
+ * - missing-locally with a remote copy → restored from the backend;
+ * - remote-missing → reported (push to upload it, or `vsync rm` to stop
+ *   tracking); never a crash;
+ * - missing-locally without a remote copy → nothing anywhere, skipped.
  *
- * `lastSyncedHash`/`lastSyncedAt` are stamped ONLY after that specific
- * file's download confirmed success (re-hashing the file just written —
- * the pulled content is the new synced truth, and re-hashing stays
- * correct even where the backend's etagOrHash uses another scheme).
- * Partial failures leave the manifest accurate per-file, not
- * all-or-nothing.
+ * Confirm-first (interactive prose mode): overwrites and restores are
+ * shown with dates on both sides and must be confirmed before anything
+ * downloads. `--yes` skips the prompt; json/silent modes never prompt.
  *
- * Output modes mirror push: "prose" (default), "json" (one result object
- * on stdout, printed BEFORE an incomplete error so agents get per-file
- * detail plus exit 1), "silent" (returned for composition — link uses
- * this).
+ * Pull never touches the remote index — the remote didn't change.
+ *
+ * Output modes mirror push: prose (default), json (one result object on
+ * stdout, printed BEFORE an incomplete error), silent (link composition).
  */
 
 type PullOutcome =
-  "pulled" | "skipped-unchanged" | "conflicted" | "needs-push" | "missing-remotely" | "failed";
+  | "pulled"
+  | "restored"
+  | "skipped-unchanged"
+  | "skipped-vanished"
+  | "missing-remotely"
+  | "aborted"
+  | "failed";
 
-/** Per-file line: actionable, states exactly why a file wasn't pulled. */
 const OUTCOME_LABEL: Record<PullOutcome, string> = {
-  pulled: "pulled",
+  pulled: "pulled (local overwritten)",
+  restored: "restored (was missing locally)",
   "skipped-unchanged": "skipped (unchanged)",
-  conflicted:
-    "REFUSED (conflict: changed locally AND remotely — re-run with --force to overwrite your local copy)",
-  "needs-push":
-    "REFUSED (changed locally only — run `vsync push` first, or --force to overwrite your local copy)",
-  "missing-remotely": "skipped (no remote copy)",
+  "skipped-vanished": "skipped (no local copy, no remote copy)",
+  "missing-remotely": "skipped (no remote copy — push to upload, or `vsync rm` to untrack)",
+  aborted: "aborted (confirmation declined)",
   failed: "FAILED",
 };
 
-/** Totals line: compact versions of the same outcomes. */
 const OUTCOME_SUMMARY: Record<PullOutcome, string> = {
   pulled: "pulled",
+  restored: "restored",
   "skipped-unchanged": "skipped (unchanged)",
-  conflicted: "refused (conflict)",
-  "needs-push": "refused (local changed)",
-  "missing-remotely": "skipped (no remote copy)",
+  "skipped-vanished": "skipped (vanished)",
+  "missing-remotely": "skipped (not on remote)",
+  aborted: "aborted",
   failed: "failed",
 };
 
@@ -71,7 +66,6 @@ interface PullResultFile {
   note?: string;
 }
 
-/** What `vsync pull` reports (prose, --json, and link composition). */
 export interface PullResult {
   projectId: string;
   backend: string;
@@ -81,7 +75,7 @@ export interface PullResult {
 
 export async function runPullCommand(
   projectRoot: string,
-  force: boolean,
+  yes = false,
   homeDir?: string,
   output: OutputMode = "prose",
 ): Promise<PullResult> {
@@ -91,11 +85,10 @@ export async function runPullCommand(
   }
   const backend = await resolveBackend(projectRoot, homeDir);
 
-  // One listing covers every tracked file; the projectId prefix scopes it.
-  const remoteByKey = new Map(
-    (await backend.list(`${manifest.projectId}/`)).map((f) => [f.path, f]),
-  );
-  const states = await computeFileSyncStates(projectRoot, manifest, remoteByKey);
+  const index = (await withSpinner("Fetching remote index", () =>
+    fetchRemoteIndex(backend, manifest.projectId),
+  )) ?? { files: {} };
+  const states = await computeFileSyncStates(projectRoot, manifest, index);
 
   const emptyResult: PullResult = {
     projectId: manifest.projectId,
@@ -120,38 +113,58 @@ export async function runPullCommand(
     );
   }
 
-  // Loud, up-front warning about what --force destroys — before any download.
-  const forceTargets = states.filter(
-    (s) => s.status === "conflict" || s.status === "local-modified",
-  );
-  if (force && forceTargets.length > 0) {
-    console.warn(
-      `WARNING: --force overwrites your LOCAL file(s) with the remote version — ` +
-        `local-only changes to ${forceTargets.length} file(s) will be LOST: ` +
-        forceTargets.map((s) => s.entry.path).join(", "),
-    );
+  const overwrites = states.filter((s) => s.status === "differs");
+  const restores = states.filter((s) => s.status === "missing-locally" && s.remote);
+  const total = overwrites.length + restores.length;
+
+  // The forced pre-flight: nothing downloads until the plan is confirmed.
+  if (total > 0 && !yes && output === "prose" && !isNonInteractive()) {
+    const fmt = (iso: string | undefined) => (iso ? iso.slice(0, 19).replace("T", " ") : "?");
+    if (overwrites.length > 0) {
+      console.log("Download (OVERWRITE the local file — remote wins):");
+      for (const s of overwrites) {
+        console.log(
+          `  ${s.entry.path} (local edited ${fmt(s.localMtime)}, remote pushed ${fmt(s.remote?.pushedAt)})`,
+        );
+      }
+    }
+    if (restores.length > 0) {
+      console.log("Download (restore — file missing locally):");
+      for (const s of restores)
+        console.log(`  ${s.entry.path} (remote pushed ${fmt(s.remote?.pushedAt)})`);
+    }
+    if (!(await confirm({ message: "Proceed with pull?", default: false }))) {
+      const files: PullResultFile[] = [...overwrites, ...restores].map((s) => ({
+        path: s.entry.path,
+        outcome: "aborted" as const,
+      }));
+      const counts = new Map<PullOutcome, number>();
+      for (const f of files) counts.set(f.outcome, (counts.get(f.outcome) ?? 0) + 1);
+      const result: PullResult = {
+        projectId: manifest.projectId,
+        backend: manifest.backend,
+        files,
+        summary: Object.fromEntries(counts) as Partial<Record<PullOutcome, number>>,
+      };
+      console.log("Aborted — nothing was pulled.");
+      return result;
+    }
   }
 
   const results: PullResultFile[] = [];
-  const syncedAt = new Date().toISOString();
   const spinner = new Spinner();
-  let dirty = false;
+  let transferred = 0;
 
-  const attemptPull = async (state: FileSyncState, note?: string): Promise<void> => {
+  const attemptPull = async (state: FileSyncState, label: "pulled" | "restored"): Promise<void> => {
     const { entry } = state;
-    const abs = join(projectRoot, entry.path);
     try {
       spinner.start(`Downloading ${entry.path}…`);
-      await backend.pull(remoteKeyFor(manifest.projectId, entry.path), abs);
-      const content = await hashFile(abs);
-      const info = await stat(abs);
-      entry.hash = content;
-      entry.lastSyncedHash = content;
-      entry.lastSyncedAt = syncedAt;
-      entry.size = info.size;
-      entry.mtimeLocal = info.mtime.toISOString();
-      dirty = true;
-      results.push({ path: entry.path, outcome: "pulled", note });
+      await backend.pull(
+        remoteKeyFor(manifest.projectId, entry.path),
+        join(projectRoot, entry.path),
+      );
+      transferred++;
+      results.push({ path: entry.path, outcome: label });
     } catch (err) {
       results.push({
         path: entry.path,
@@ -167,47 +180,24 @@ export async function runPullCommand(
       results.push({ path: entry.path, outcome: "skipped-unchanged" });
       continue;
     }
-    if (state.status === "remote-missing") {
-      results.push({
-        path: entry.path,
-        outcome: "missing-remotely",
-        note:
-          entry.lastSyncedHash === undefined
-            ? "never pushed"
-            : "deleted on the backend — push to restore, or `vsync rm` to untrack",
-      });
+    if (state.status === "differs") {
+      await attemptPull(state, "pulled");
       continue;
     }
     if (state.status === "missing-locally") {
-      // No local file: a remote copy makes this a restore; without one
-      // there is nothing to pull from either side.
-      if (remoteByKey.has(remoteKeyFor(manifest.projectId, entry.path))) {
-        await attemptPull(state, "restored");
-      } else {
-        results.push({
-          path: entry.path,
-          outcome: "missing-remotely",
-          note: "no local copy either",
-        });
-      }
+      if (state.remote) await attemptPull(state, "restored");
+      else results.push({ path: entry.path, outcome: "skipped-vanished" });
       continue;
     }
-    const overwritesLocal = state.status === "conflict" || state.status === "local-modified";
-    if (overwritesLocal && !force) {
-      results.push({
-        path: entry.path,
-        outcome: state.status === "conflict" ? "conflicted" : "needs-push",
-      });
-      continue;
-    }
-    await attemptPull(state);
+    // remote-missing
+    results.push({
+      path: entry.path,
+      outcome: "missing-remotely",
+      note: undefined,
+    });
   }
 
   spinner.stop();
-
-  if (dirty) {
-    await writeManifest(projectRoot, manifest);
-  }
 
   const counts = new Map<PullOutcome, number>();
   for (const r of results) counts.set(r.outcome, (counts.get(r.outcome) ?? 0) + 1);
@@ -222,52 +212,39 @@ export async function runPullCommand(
     for (const r of results) {
       console.log(`  ${r.path} — ${OUTCOME_LABEL[r.outcome]}${r.note ? ` (${r.note})` : ""}`);
     }
-    // Fixed order so the summary doesn't shuffle with file sort order.
-    const SUMMARY_ORDER: PullOutcome[] = [
+    const ORDER: PullOutcome[] = [
       "pulled",
+      "restored",
       "skipped-unchanged",
-      "conflicted",
-      "needs-push",
       "missing-remotely",
+      "skipped-vanished",
+      "aborted",
       "failed",
     ];
-    const summary: string[] = [];
-    for (const outcome of SUMMARY_ORDER) {
-      const n = counts.get(outcome);
-      if (n) summary.push(`${n} ${OUTCOME_SUMMARY[outcome]}`);
+    const parts: string[] = [];
+    for (const outcome of ORDER) {
+      const n = result.summary[outcome];
+      if (n) parts.push(`${n} ${OUTCOME_SUMMARY[outcome]}`);
     }
-    console.log(`Summary: ${summary.join(", ")}`);
+    console.log(`Summary: ${parts.join(", ")}`);
   } else if (output === "json") {
-    // Printed BEFORE the incomplete error below: agents get the per-file
-    // detail on stdout plus exit 1 + stderr error.
     console.log(JSON.stringify(result, null, 2));
   }
 
-  // Stamp the global registry's lastSyncedAt (what `vsync list` shows) —
-  // only when something actually downloaded.
-  if (counts.get("pulled")) {
+  if (transferred > 0) {
     const global = await readGlobalConfig(homeDir);
     upsertProjectEntry(global, {
       projectId: manifest.projectId,
       path: projectRoot,
       backend: manifest.backend,
-      lastSyncedAt: syncedAt,
+      lastSyncedAt: new Date().toISOString(),
     });
     await writeGlobalConfig(global, homeDir);
   }
 
-  const conflicts = counts.get("conflicted") ?? 0;
-  const needsPush = counts.get("needs-push") ?? 0;
-  const failed = counts.get("failed") ?? 0;
-  if (conflicts + needsPush + failed > 0) {
-    const reasons: string[] = [];
-    if (conflicts > 0) reasons.push(`${conflicts} conflicted (needs --force)`);
-    if (needsPush > 0) reasons.push(`${needsPush} changed locally (push first, or --force)`);
-    if (failed > 0) reasons.push(`${failed} failed to download`);
-    throw new Error(
-      `Pull incomplete — ${reasons.join("; ")}. ` +
-        `The manifest records only successful downloads.`,
-    );
+  const failed = result.summary.failed ?? 0;
+  if (failed > 0) {
+    throw new Error(`Pull incomplete — ${failed} failed to download.`);
   }
   return result;
 }

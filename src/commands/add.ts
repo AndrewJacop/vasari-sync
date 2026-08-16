@@ -1,12 +1,6 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { hashFile } from "../core/hash.js";
-import {
-  readManifest,
-  upsertFileEntry,
-  writeManifest,
-  type ManifestFileEntry,
-} from "../core/manifest.js";
+import { readManifest, upsertFileEntry, writeManifest } from "../core/manifest.js";
 import { toProjectRelativePath } from "../utils/paths.js";
 
 /**
@@ -44,14 +38,8 @@ export async function runAddCommand(
   }
 
   for (const rel of relPaths) {
-    const abs = join(projectRoot, rel);
-    const info = await stat(abs);
-    upsertFileEntry(manifest, {
-      path: rel,
-      hash: await hashFile(abs),
-      size: info.size,
-      mtimeLocal: info.mtime.toISOString(),
-    } satisfies ManifestFileEntry);
+    await stat(join(projectRoot, rel)); // existence + regular-file check
+    upsertFileEntry(manifest, { path: rel });
   }
   await writeManifest(projectRoot, manifest);
 

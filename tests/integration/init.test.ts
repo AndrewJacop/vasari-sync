@@ -25,7 +25,6 @@ vi.mock("../../src/utils/treeCheckbox.js", () => ({
 import { input, select } from "@inquirer/prompts";
 import { runInitCommand } from "../../src/commands/init.js";
 import { treeCheckbox } from "../../src/utils/treeCheckbox.js";
-import { hashFile } from "../../src/core/hash.js";
 import { readGlobalConfig, writeGlobalConfig } from "../../src/core/globalConfig.js";
 import { readManifest } from "../../src/core/manifest.js";
 import { access } from "node:fs/promises";
@@ -107,14 +106,8 @@ describe("vsync init — first run", () => {
     expect(manifest!.projectId).toBe("my-app");
     expect(manifest!.backend).toBe("local-fs");
     expect(manifest!.files).toHaveLength(1);
-    const entry = manifest!.files[0];
-    expect(entry.path).toBe(".env");
-    expect(entry.hash).toBe(await hashFile(join(projectRoot, ".env")));
-    expect(entry.size).toBe(8);
-    expect(entry.mtimeLocal).toBeTypeOf("string");
-    // Never synced: no lastSyncedHash/lastSyncedAt yet.
-    expect(entry.lastSyncedHash).toBeUndefined();
-    expect(entry.lastSyncedAt).toBeUndefined();
+    // The manifest is a tracked-paths list — no hash bookkeeping lives here.
+    expect(manifest!.files[0]).toEqual({ path: ".env" });
 
     // The wiring snapshot is gone: init writes ONLY the manifest.
     expect(await exists(join(projectRoot, ".vsync", "config.json"))).toBe(false);
@@ -202,7 +195,7 @@ describe("vsync init — non-interactive (flags, no prompts)", () => {
     const manifest = await readManifest(projectRoot);
     expect(manifest!.projectId).toBe("agent-app");
     expect(manifest!.files.map((f) => f.path)).toEqual([".env"]);
-    expect(manifest!.files[0].hash).toBe(await hashFile(join(projectRoot, ".env")));
+    expect(manifest!.files[0]).toEqual({ path: ".env" });
   });
 
   it("defaults projectId to the folder name, backend to the global default, tracks nothing", async () => {

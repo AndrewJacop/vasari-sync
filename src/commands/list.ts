@@ -23,6 +23,8 @@ export async function runListCommand(homeDir?: string, json = false): Promise<vo
   for (const name of Object.keys(global.profiles)) {
     try {
       for (const file of await createBackendFromProfile(name, global).list()) {
+        // Skip the sidecar index — it's vsync bookkeeping, not a synced file.
+        if (file.path.endsWith("/.vsync-index.json")) continue;
         const id = file.path.split("/")[0];
         // Top-level segments are project IDs; stray root files / dir
         // entries (trailing slash) are not projects.

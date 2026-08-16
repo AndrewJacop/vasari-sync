@@ -2,7 +2,7 @@ import { confirm } from "@inquirer/prompts";
 import { createBackendFromProfile } from "../core/backendResolver.js";
 import { readGlobalConfig, upsertProjectEntry, writeGlobalConfig } from "../core/globalConfig.js";
 import { readManifest, writeManifest, type ManifestFileEntry } from "../core/manifest.js";
-import type { RemoteFile } from "../storage/types.js";
+import { fetchRemoteIndex, indexKeyFor } from "../core/remoteIndex.js";
 import { ensureVsyncIgnored } from "../utils/paths.js";
 import { isNonInteractive } from "../utils/tty.js";
 import { runPullCommand } from "./pull.js";
@@ -21,10 +21,9 @@ export interface LinkCommandOptions {
  * prefix becomes a tracked entry, the project joins the local registry,
  * and the user is offered an immediate pull to bring the files down.
  *
- * Entries start with empty hash/mtime ("unknown until pulled") — the
- * follow-up pull stamps real values. If the user declines and local files
- * already exist, sync states read as conflicts until a pull (or --force)
- * resolves them — the safe direction, never a silent overwrite.
+ * Entries are just tracked paths — all remote state lives in the backend
+ * sidecar index, so a linked clone is immediately diffable (and a pull
+ * only overwrites what actually differs).
  */
 export async function runLinkCommand(
   projectRoot: string,
@@ -49,15 +48,29 @@ export async function runLinkCommand(
 
   // Find the project on any saved profile; first hit wins. Handlers are
   // built with secrets merged in — constructors validate credentials.
+  // Preferred source: the sidecar index (exact tracked paths + hashes).
+  // Fallback for pre-index backends: the raw file listing, minus the
+  // index file itself.
   let backendName: string | undefined;
-  let remoteFiles: RemoteFile[] = [];
+  let paths: string[] = [];
   const failures: string[] = [];
   for (const name of profileNames) {
     try {
-      const hits = await createBackendFromProfile(name, global).list(`${projectId}/`);
-      if (hits.length > 0) {
+      const backend = createBackendFromProfile(name, global);
+      const index = await fetchRemoteIndex(backend, projectId);
+      if (index && Object.keys(index.files).length > 0) {
         backendName = name;
-        remoteFiles = hits;
+        paths = Object.keys(index.files);
+        break;
+      }
+      const listing = await backend.list(`${projectId}/`);
+      const listed = listing
+        .filter((f) => f.path.startsWith(`${projectId}/`) && !f.path.endsWith("/"))
+        .map((f) => f.path.slice(projectId.length + 1))
+        .filter((p) => p !== indexKeyFor(projectId).slice(projectId.length + 1));
+      if (listed.length > 0) {
+        backendName = name;
+        paths = listed;
         break;
       }
     } catch (err) {
@@ -72,16 +85,7 @@ export async function runLinkCommand(
     );
   }
 
-  // Strip the `<projectId>/` prefix. Handlers list files only, but a
-  // trailing-slash entry (directory) is dropped defensively.
-  const files: ManifestFileEntry[] = remoteFiles
-    .filter((f) => f.path.startsWith(`${projectId}/`) && !f.path.endsWith("/"))
-    .map((f) => ({
-      path: f.path.slice(projectId.length + 1),
-      size: f.size,
-      hash: "",
-      mtimeLocal: "",
-    }));
+  const files: ManifestFileEntry[] = paths.map((path) => ({ path }));
 
   await writeManifest(projectRoot, { projectId, backend: backendName, files });
   await ensureVsyncIgnored(projectRoot);
@@ -113,10 +117,11 @@ export async function runLinkCommand(
   }
 
   if (options.pull) {
-    await runPullCommand(projectRoot, false, homeDir);
+    // yes=true: the question above (or the --pull flag) already answered it.
+    await runPullCommand(projectRoot, true, homeDir);
   } else if (!isNonInteractive()) {
     if (await confirm({ message: "Pull the files now?", default: true })) {
-      await runPullCommand(projectRoot, false, homeDir);
+      await runPullCommand(projectRoot, true, homeDir);
     } else {
       console.log("Run `vsync pull` whenever you're ready.");
     }

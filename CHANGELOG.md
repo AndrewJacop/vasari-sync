@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-16
+
+### Fixed
+
+- **The sync comparison was broken on every real backend.** The
+  manifest's sha256 hash was compared against the backend's native
+  change indicator (git blob SHA-1 for `github-repo`, MD5 etag for S3,
+  opaque etags for WebDAV) — values that can never be equal, so every
+  tracked file permanently showed as "changed remotely" and push/pull
+  refused each other in a loop. Remote state is now tracked in a small
+  `.vsync-index.json` sidecar vsync maintains on the backend itself: one
+  hash format everywhere, and `status`/`diff` need a single small fetch
+  instead of recursive backend listings.
+
+### Changed
+
+- **Simpler single-user sync model: live two-way compare, direction
+  decides the winner.** `status`/`diff` now compare the current local
+  files against the backend's current state and report `differs` /
+  `missing-locally` / `remote-missing` / `unchanged` (the
+  `conflict`/`local-modified`/`remote-modified` split is gone — for a
+  single-user tool, "who changed" is always you). `push` makes the
+  remote match local (files deleted locally are deleted on the backend);
+  `pull` makes local match the remote. The old conflict refusals are
+  replaced by a **confirmation-first flow**: interactive `push`/`pull`
+  print the full plan — uploads, overwrites, deletions, with local-edit
+  and remote-push dates — and ask before anything transfers. `-y/--yes`
+  skips the prompt; `--force` is kept as a legacy alias for `--yes`.
+- The project manifest is now a plain tracked-paths list — all hash
+  bookkeeping lives in the backend-side index, so the manifest can never
+  desync from the remote. Old manifests still parse; stale per-file
+  fields are dropped on the next write. **After upgrading, the first
+  `vsync push` re-uploads identical bytes once to create the index.**
+- `link` rebuilds the manifest from the backend's remote index (raw
+  file-listing fallback for backends written by older versions).
+- `list` no longer counts the sidecar index as a project file.
+- `diff --show-values`: `-` is always the remote copy and `+` the local
+  one; binary files get a size/date summary instead of garbage diff
+  lines.
+
 ## [0.5.0] - 2026-08-16
 
 ### Added

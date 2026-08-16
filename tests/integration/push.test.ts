@@ -1,21 +1,25 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runPushCommand } from "../../src/commands/push.js";
 import { readGlobalConfig } from "../../src/core/globalConfig.js";
 import { hashFile } from "../../src/core/hash.js";
-import {
-  manifestPath,
-  readManifest,
-  writeManifest,
-  type ManifestFileEntry,
-} from "../../src/core/manifest.js";
+import { writeManifest } from "../../src/core/manifest.js";
+import { indexKeyFor } from "../../src/core/remoteIndex.js";
 import { remoteKeyFor } from "../../src/utils/paths.js";
 
 const execFileAsync = promisify(execFile);
+
+/** Scripted prompts: push asks for confirmation when interactive. */
+const q = vi.hoisted(() => ({ answers: [] as unknown[] }));
+vi.mock("@inquirer/prompts", () => ({
+  confirm: vi.fn(async () => q.answers.shift()),
+}));
+
+import { confirm } from "@inquirer/prompts";
 
 let projectRoot: string | undefined;
 let homeDir: string | undefined;
@@ -23,10 +27,9 @@ let remoteDir: string | undefined;
 
 /**
  * A real git project the way `vsync init` leaves it, backed by a local-fs
- * backend. Tracked files start UNSYNCED unless `pushed` names them — for
- * those, the file is copied to the remote tree and the manifest entry gets
- * lastSyncedHash/lastSyncedAt stamped, exactly what a successful `push`
- * does.
+ * backend. Files named in `pushed` are synced with the REAL push (silent,
+ * auto-confirmed) — the only honest way to produce "previously pushed"
+ * state, remote copies AND the remote index together.
  */
 async function makeProject(name: string, tracked: string[], pushed: string[] = []): Promise<void> {
   projectRoot = await mkdtemp(join(tmpdir(), `vsync-push-${name}-`));
@@ -42,29 +45,14 @@ async function makeProject(name: string, tracked: string[], pushed: string[] = [
   await writeFile(join(projectRoot, "sub", "app.local.json"), '{ "debug": true }\n');
 
   await writeGlobalProfile();
+  await writeManifest(projectRoot, {
+    projectId: name,
+    backend: "local-fs",
+    files: tracked.map((path) => ({ path })),
+  });
 
-  const files: ManifestFileEntry[] = [];
-  for (const rel of tracked) {
-    const abs = join(projectRoot, rel);
-    const info = await stat(abs);
-    files.push({
-      path: rel,
-      hash: await hashFile(abs),
-      size: info.size,
-      mtimeLocal: info.mtime.toISOString(),
-    });
-  }
-  await writeManifest(projectRoot, { projectId: name, backend: "local-fs", files });
-
-  for (const rel of pushed) {
-    const dest = remotePathOf(name, rel);
-    await mkdir(dirname(dest), { recursive: true });
-    await copyFile(join(projectRoot, rel), dest);
-    const manifest = (await readManifest(projectRoot))!;
-    const entry = manifest.files.find((f) => f.path === rel)!;
-    entry.lastSyncedHash = entry.hash;
-    entry.lastSyncedAt = new Date().toISOString();
-    await writeManifest(projectRoot, manifest);
+  if (pushed.length > 0) {
+    await runPushCommand(projectRoot, true, homeDir, "silent");
   }
 }
 
@@ -72,6 +60,18 @@ async function makeProject(name: string, tracked: string[], pushed: string[] = [
  * a hand-joined projectId (a wrong ID is exactly how fixtures rot). */
 function remotePathOf(name: string, rel: string): string {
   return join(remoteDir!, remoteKeyFor(name, rel));
+}
+
+/** Where the backend stores this project's sidecar index. */
+function indexPathOf(name: string): string {
+  return join(remoteDir!, indexKeyFor(name));
+}
+
+/** The remote index as parsed JSON (fails the test if missing). */
+async function readRemoteIndex(
+  name: string,
+): Promise<{ files: Record<string, { hash: string; size: number; pushedAt: string }> }> {
+  return JSON.parse(await readFile(indexPathOf(name), "utf8"));
 }
 
 /** Minimal global config so backendResolver finds the profile + no secrets. */
@@ -90,7 +90,7 @@ async function writeGlobalProfile(): Promise<void> {
 /** Drives push with console captured; `err` holds a thrown aggregate (if
  * any) instead of letting it escape — tests decide what to expect. */
 async function runPush(
-  force = false,
+  yes = false,
   output: "prose" | "json" | "silent" = "prose",
 ): Promise<{ out: string; warns: string[]; err?: unknown }> {
   const lines: string[] = [];
@@ -103,7 +103,7 @@ async function runPush(
   });
   let err: unknown;
   try {
-    await runPushCommand(projectRoot!, force, homeDir, output);
+    await runPushCommand(projectRoot!, yes, homeDir, output);
   } catch (e) {
     err = e;
   }
@@ -116,6 +116,7 @@ function errMsg(err: unknown): string {
 
 beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
+  Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
 });
 
 afterEach(async () => {
@@ -127,7 +128,7 @@ afterEach(async () => {
 });
 
 describe("vsync push", () => {
-  it("clean push of new (never-pushed) files uploads, stamps the manifest, and registers the project", async () => {
+  it("clean push of new (never-pushed) files uploads, writes the remote index, and registers the project", async () => {
     const tracked = [".env", "local-notes.txt", "sub/app.local.json"];
     await makeProject("clean", tracked);
 
@@ -139,11 +140,15 @@ describe("vsync push", () => {
       expect(await readFile(remotePathOf("clean", rel), "utf8")).toBe(
         await readFile(join(projectRoot!, rel), "utf8"),
       );
-      // Manifest stamped with the pushed content's hash.
-      const entry = (await readManifest(projectRoot!))!.files.find((f) => f.path === rel)!;
-      expect(entry.lastSyncedHash).toBe(await hashFile(join(projectRoot!, rel)));
-      expect(entry.lastSyncedAt).toBeTruthy();
       expect(out).toMatch(new RegExp(`${rel.replace(/\//g, "\\/")} — pushed`));
+    }
+    // The sidecar index exists and records each pushed file's real hash.
+    const index = await readRemoteIndex("clean");
+    for (const rel of tracked) {
+      expect(index.files[rel]).toMatchObject({
+        hash: await hashFile(join(projectRoot!, rel)),
+      });
+      expect(typeof index.files[rel].pushedAt).toBe("string");
     }
     // Global registry stamped for `vsync list`.
     const registry = (await readGlobalConfig(homeDir)).projects;
@@ -157,11 +162,10 @@ describe("vsync push", () => {
     expect(out).toContain("Summary: 3 pushed");
   });
 
-  it("is a no-op on unchanged files — nothing re-uploaded, manifest byte-identical", async () => {
+  it("is a no-op on unchanged files — nothing re-uploaded, index untouched", async () => {
     await makeProject("noop", [".env", "steady.txt"]);
-    const first = await runPush();
-    expect(first.err).toBeUndefined();
-    const manifestAfterFirst = await readFile(manifestPath(projectRoot!), "utf8");
+    await runPush(true, "silent");
+    const indexBefore = await readFile(indexPathOf("noop"), "utf8");
 
     const second = await runPush();
 
@@ -169,88 +173,115 @@ describe("vsync push", () => {
     expect(second.out).toMatch(/\.env — skipped \(unchanged\)/);
     expect(second.out).toMatch(/steady\.txt — skipped \(unchanged\)/);
     expect(second.out).toContain("Summary: 2 skipped (unchanged)");
-    // No-op writes nothing: manifest content (incl. lastSyncedAt) identical.
-    expect(await readFile(manifestPath(projectRoot!), "utf8")).toBe(manifestAfterFirst);
+    expect(await readFile(indexPathOf("noop"), "utf8")).toBe(indexBefore);
   });
 
-  it("refuses a conflict (both sides changed) without --force — remote untouched, manifest untouched", async () => {
-    await makeProject("conflict", [".env"], [".env"]);
-    const baseHash = (await readManifest(projectRoot!))!.files[0].lastSyncedHash;
+  it("overwrites the remote copy when the file differs — local wins, no refusals", async () => {
+    await makeProject("overwrite", [".env"], [".env"]);
     await writeFile(join(projectRoot!, ".env"), "A=99\n"); // local side changes
-    await writeFile(remotePathOf("conflict", ".env"), "REMOTE=1\n"); // remote side changes
 
     const { out, err } = await runPush();
-
-    expect(errMsg(err)).toMatch(/Push incomplete — 1 conflicted \(needs --force\)/);
-    expect(out).toMatch(/\.env — REFUSED \(conflict/);
-    // Remote keeps the OTHER machine's version; manifest keeps the base hash.
-    expect(await readFile(remotePathOf("conflict", ".env"), "utf8")).toBe("REMOTE=1\n");
-    expect((await readManifest(projectRoot!))!.files[0].lastSyncedHash).toBe(baseHash);
-  });
-
-  it("refuses to clobber a remotely-modified file without --force (nothing gained by pushing)", async () => {
-    await makeProject("needspull", [".env"], [".env"]);
-    const baseHash = (await readManifest(projectRoot!))!.files[0].lastSyncedHash;
-    await writeFile(remotePathOf("needspull", ".env"), "REMOTE=2\n"); // remote-only change
-
-    const { out, err } = await runPush();
-
-    expect(errMsg(err)).toMatch(/Push incomplete — 1 changed remotely/);
-    expect(out).toMatch(/\.env — REFUSED \(changed remotely only/);
-    expect(await readFile(remotePathOf("needspull", ".env"), "utf8")).toBe("REMOTE=2\n");
-    expect((await readManifest(projectRoot!))!.files[0].lastSyncedHash).toBe(baseHash);
-  });
-
-  it("--force warns loudly, then overwrites the remote copy with the local version", async () => {
-    await makeProject("forced", [".env"], [".env"]);
-    await writeFile(join(projectRoot!, ".env"), "A=99\n");
-    await writeFile(remotePathOf("forced", ".env"), "REMOTE=1\n");
-
-    const { out, warns, err } = await runPush(true);
 
     expect(err).toBeUndefined();
-    // The warning fires BEFORE anything uploads and names the cost.
-    expect(warns.join("\n")).toMatch(/WARNING: --force overwrites the remote copy/);
-    expect(warns.join("\n")).toMatch(/will be LOST: \.env/);
     expect(out).toMatch(/\.env — pushed/);
-    // Local version won; manifest stamped with its hash.
-    expect(await readFile(remotePathOf("forced", ".env"), "utf8")).toBe("A=99\n");
-    const entry = (await readManifest(projectRoot!))!.files[0];
-    expect(entry.lastSyncedHash).toBe(await hashFile(join(projectRoot!, ".env")));
+    expect(await readFile(remotePathOf("overwrite", ".env"), "utf8")).toBe("A=99\n");
+    // Index now records the new content's hash.
+    const index = await readRemoteIndex("overwrite");
+    expect(index.files[".env"].hash).toBe(await hashFile(join(projectRoot!, ".env")));
   });
 
-  it("partial failure: a failed upload leaves successful files stamped and the failed one untouched", async () => {
-    await makeProject("partial", [".env", "steady.txt"]);
-    // Sink the backend call for steady.txt: a DIRECTORY at its remote
-    // destination makes copyFile fail (EISDIR on POSIX, EPERM on Windows),
-    // and list() can't see it as a file either — a genuine backend error.
-    await mkdir(remotePathOf("partial", "steady.txt"), { recursive: true });
+  it("trusts the index: a backend file changed behind the index's back is invisible (skipped)", async () => {
+    await makeProject("behind", [".env"], [".env"]);
+    // Someone edits the backend directly — the index still describes the
+    // pushed content, so push (correctly, per the design) sees no change.
+    await writeFile(remotePathOf("behind", ".env"), "ROGUE=1\n");
 
     const { out, err } = await runPush();
 
-    expect(errMsg(err)).toMatch(/Push incomplete — 1 failed to upload/);
-    expect(out).toMatch(/\.env — pushed/);
-    expect(out).toMatch(/steady\.txt — FAILED \(/);
-    // Per-file manifest accuracy, not all-or-nothing.
-    const manifest = (await readManifest(projectRoot!))!;
-    const envEntry = manifest.files.find((f) => f.path === ".env")!;
-    const steadyEntry = manifest.files.find((f) => f.path === "steady.txt")!;
-    expect(envEntry.lastSyncedHash).toBe(await hashFile(join(projectRoot!, ".env")));
-    expect(steadyEntry.lastSyncedHash).toBeUndefined();
-    // .env really made it to the backend despite steady.txt failing.
-    expect(await readFile(remotePathOf("partial", ".env"), "utf8")).toBe("A=1\nB=2\n");
+    expect(err).toBeUndefined();
+    expect(out).toMatch(/\.env — skipped \(unchanged\)/);
+    expect(await readFile(remotePathOf("behind", ".env"), "utf8")).toBe("ROGUE=1\n");
   });
 
-  it("reports a tracked file that's missing locally, still pushes the others", async () => {
-    await makeProject("gone", [".env", "steady.txt"]);
+  it("mirror semantics: a file deleted locally is deleted on the backend and dropped from the index", async () => {
+    await makeProject("mirror-del", [".env", "steady.txt"], [".env", "steady.txt"]);
     await rm(join(projectRoot!, ".env"));
 
     const { out, err } = await runPush();
 
-    expect(err).toBeUndefined(); // reported, not a failure
-    expect(out).toMatch(/\.env — skipped \(no local file\)/);
+    expect(err).toBeUndefined();
+    expect(out).toMatch(/\.env — deleted on the backend/);
+    expect(out).toMatch(/steady\.txt — skipped \(unchanged\)/);
+    await expect(stat(remotePathOf("mirror-del", ".env"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    const index = await readRemoteIndex("mirror-del");
+    expect(index.files[".env"]).toBeUndefined();
+    expect(index.files["steady.txt"]).toBeDefined();
+  });
+
+  it("reports a tracked file that exists nowhere as vanished, still pushes the others", async () => {
+    await makeProject("gone", [".env", "steady.txt"]);
+    await rm(join(projectRoot!, ".env"));
+    // Never pushed → no remote index at all: the file exists nowhere.
+
+    const { out, err } = await runPush();
+
+    expect(err).toBeUndefined();
+    expect(out).toMatch(/\.env — skipped \(no local copy, no remote copy\)/);
     expect(out).toMatch(/steady\.txt — pushed/);
-    expect(out).toContain("Summary: 1 pushed, 1 skipped (no local file)");
+    expect(out).toContain("Summary: 1 pushed, 1 skipped (vanished)");
+  });
+
+  it("partial failure: a failed upload still indexes successful files; the failed one stays unindexed", async () => {
+    await makeProject("partial", [".env", "steady.txt"]);
+    // Sink the backend call for steady.txt: a DIRECTORY at its remote
+    // destination makes copyFile fail (EISDIR on POSIX, EPERM on Windows).
+    await mkdir(remotePathOf("partial", "steady.txt"), { recursive: true });
+
+    const { out, err } = await runPush();
+
+    expect(errMsg(err)).toMatch(/Push incomplete — 1 failed to transfer/);
+    expect(out).toMatch(/\.env — pushed/);
+    expect(out).toMatch(/steady\.txt — FAILED \(/);
+    // The index records only the success — it still describes the remote.
+    const index = await readRemoteIndex("partial");
+    expect(index.files[".env"]).toBeDefined();
+    expect(index.files["steady.txt"]).toBeUndefined();
+    expect(await readFile(remotePathOf("partial", ".env"), "utf8")).toBe("A=1\nB=2\n");
+  });
+
+  it("asks for confirmation and aborts cleanly when declined (nothing transfers)", async () => {
+    await makeProject("confirm-no", [".env"]);
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    q.answers = [false];
+
+    const { out, err } = await runPush();
+
+    expect(err).toBeUndefined();
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(out).toContain("Upload (new on the backend):");
+    expect(out).toContain("Aborted — nothing was pushed.");
+    await expect(stat(remotePathOf("confirm-no", ".env"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("confirmation names overwrites and deletions with dates on both sides", async () => {
+    await makeProject("confirm-detail", [".env", "steady.txt"], [".env", "steady.txt"]);
+    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // differs
+    await rm(join(projectRoot!, "steady.txt")); // will be deleted remotely
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    q.answers = [true];
+
+    const { out, err } = await runPush();
+
+    expect(err).toBeUndefined();
+    expect(out).toContain("Upload (OVERWRITE the remote copy — local wins):");
+    expect(out).toMatch(/\.env \(local edited \d{4}-\d{2}-\d{2}/);
+    expect(out).toContain("DELETE on the backend (missing locally):");
+    expect(out).toMatch(/steady\.txt \(remote pushed \d{4}-\d{2}-\d{2}/);
+    expect(await readFile(remotePathOf("confirm-detail", ".env"), "utf8")).toBe("A=2\n");
   });
 
   it("handles a project with zero tracked files", async () => {
@@ -273,8 +304,9 @@ describe("vsync push", () => {
 
 describe("vsync push --json", () => {
   it("emits one result object on stdout, per-file outcomes included", async () => {
-    await makeProject("json-clean", [".env", "steady.txt"], [".env", "steady.txt"]);
-    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // local-modified
+    await makeProject("json-clean", [".env", "steady.txt"]);
+    await runPush(true, "silent");
+    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // differs
 
     const { out, err } = await runPush(false, "json");
 
@@ -292,33 +324,29 @@ describe("vsync push --json", () => {
       ]),
     );
     expect(parsed.summary).toEqual({ pushed: 1, "skipped-unchanged": 1 });
-    // Pure stdout: exactly one JSON object, no prose header.
     expect(out.trim().startsWith("{")).toBe(true);
     expect(out).not.toContain("tracked file(s)");
   });
 
   it("prints the result BEFORE throwing on an incomplete push", async () => {
-    await makeProject("json-conflict", [".env"], [".env"]);
-    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // both sides change
-    await writeFile(join(remoteDir!, "json-conflict", ".env"), "REMOTE=1\n");
+    await makeProject("json-fail", [".env"]);
+    await mkdir(remotePathOf("json-fail", ".env"), { recursive: true }); // upload sink
 
     const { out, err } = await runPush(false, "json");
 
-    // Agents still get the per-file detail plus the error.
     expect(err).toBeInstanceOf(Error);
     expect(errMsg(err)).toMatch(/Push incomplete/);
     const parsed = JSON.parse(out) as { files: { outcome: string }[] };
-    expect(parsed.files[0].outcome).toBe("conflicted");
+    expect(parsed.files[0].outcome).toBe("failed");
   });
 
-  it("silent mode prints nothing, returns the result (link composition)", async () => {
+  it("silent mode prints nothing, still uploads and writes the index", async () => {
     await makeProject("silent", [".env"]);
 
-    const { out } = await runPush(false, "silent");
+    const { out } = await runPush(true, "silent");
 
     expect(out).toBe("");
-    // The upload still happened (side effect check via manifest stamp).
-    const manifest = await readManifest(projectRoot!);
-    expect(manifest!.files[0].lastSyncedAt).toBeDefined();
+    expect(await readFile(remotePathOf("silent", ".env"), "utf8")).toBe("A=1\nB=2\n");
+    expect((await readRemoteIndex("silent")).files[".env"]).toBeDefined();
   });
 });

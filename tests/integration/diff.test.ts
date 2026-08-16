@@ -1,12 +1,14 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runDiffCommand } from "../../src/commands/diff.js";
+import { runPushCommand } from "../../src/commands/push.js";
 import { hashFile } from "../../src/core/hash.js";
-import { readManifest, writeManifest, type ManifestFileEntry } from "../../src/core/manifest.js";
+import { writeManifest } from "../../src/core/manifest.js";
+import { indexKeyFor } from "../../src/core/remoteIndex.js";
 import { remoteKeyFor } from "../../src/utils/paths.js";
 
 const execFileAsync = promisify(execFile);
@@ -18,10 +20,8 @@ let logs: string[][] = [];
 
 /**
  * A real git project the way `vsync init` leaves it, backed by a local-fs
- * backend. Tracked files start UNSYNCED unless `pushed` names them — for
- * those, the file is copied to the remote tree and the manifest entry gets
- * lastSyncedHash/lastSyncedAt stamped, exactly what a successful `push`
- * (Task 14) will do.
+ * backend. Files named in `pushed` are synced with the REAL push (silent,
+ * auto-confirmed) — remote copies plus the remote index.
  */
 async function makeProject(name: string, tracked: string[], pushed: string[] = []): Promise<void> {
   projectRoot = await mkdtemp(join(tmpdir(), `vsync-diff-${name}-`));
@@ -37,37 +37,44 @@ async function makeProject(name: string, tracked: string[], pushed: string[] = [
   await writeFile(join(projectRoot, "sub", "app.local.json"), '{ "debug": true }\n');
 
   await writeGlobalProfile();
+  await writeManifest(projectRoot, {
+    projectId: name,
+    backend: "local-fs",
+    files: tracked.map((path) => ({ path })),
+  });
 
-  const files: ManifestFileEntry[] = [];
-  for (const rel of tracked) {
-    const abs = join(projectRoot, rel);
-    const info = await stat(abs);
-    files.push({
-      path: rel,
-      hash: await hashFile(abs),
-      size: info.size,
-      mtimeLocal: info.mtime.toISOString(),
-    });
-  }
-  await writeManifest(projectRoot, { projectId: name, backend: "local-fs", files });
-
-  for (const rel of pushed) {
-    const dest = remotePathOf(name, rel);
-    await mkdir(dirname(dest), { recursive: true });
-    await copyFile(join(projectRoot, rel), dest);
-    const manifest = (await readManifest(projectRoot))!;
-    const entry = manifest.files.find((f) => f.path === rel)!;
-    entry.lastSyncedHash = entry.hash;
-    entry.lastSyncedAt = new Date().toISOString();
-    await writeManifest(projectRoot, manifest);
+  if (pushed.length > 0) {
+    await runPushCommand(projectRoot, true, homeDir, "silent");
   }
 }
 
-/** Where the backend stores a tracked file of project `name` (keys are
- * "<projectId>/<path>") — build remote paths ONLY via this, never by
- * hand-joining a project name. */
+/** Where the backend stores a tracked file of project `name` — build remote
+ * paths ONLY via this, never by hand-joining a project name. */
 function remotePathOf(name: string, rel: string): string {
   return join(remoteDir!, remoteKeyFor(name, rel));
+}
+
+/** Where the backend stores this project's sidecar index. */
+function indexPathOf(name: string): string {
+  return join(remoteDir!, indexKeyFor(name));
+}
+
+/** Simulates "the other machine pushed new content": updates the remote
+ * file AND its index entry, exactly what a real push does. */
+async function setRemoteContent(name: string, rel: string, content: string): Promise<void> {
+  const dest = remotePathOf(name, rel);
+  await writeFile(dest, content);
+  const info = await stat(dest);
+  const indexPath = indexPathOf(name);
+  const index = JSON.parse(await readFile(indexPath, "utf8")) as {
+    files: Record<string, { hash: string; size: number; pushedAt: string }>;
+  };
+  index.files[rel] = {
+    hash: await hashFile(dest),
+    size: info.size,
+    pushedAt: new Date().toISOString(),
+  };
+  await writeFile(indexPath, JSON.stringify(index, null, 2) + "\n");
 }
 
 /** Minimal global config so backendResolver finds the profile + no secrets. */
@@ -113,12 +120,12 @@ describe("vsync diff (default, no --show-values)", () => {
     await makeProject("mixed", tracked, [...tracked]);
 
     await writeFile(join(projectRoot!, ".env"), "A=2\n"); // local edit
-    await writeFile(remotePathOf("mixed", "local-notes.txt"), "edited remotely\n"); // remote edit
+    await setRemoteContent("mixed", "local-notes.txt", "edited remotely\n"); // remote edit
 
     const out = await runDiff();
 
-    expect(out).toMatch(/Changed locally[^\n]*:\s*\n\s*\.env\b/);
-    expect(out).toMatch(/Changed remotely[^\n]*:\s*\n\s*local-notes\.txt\b/);
+    expect(out).toMatch(/Differ \(local ≠ remote[^\n]*:\s*\n\s*\.env\b/);
+    expect(out).toMatch(/\n\s*local-notes\.txt\b/);
     // steady.txt is in sync → not listed as differing, not counted.
     expect(out).not.toMatch(/steady\.txt/);
     expect(out).toContain("3 tracked file(s), 2 differ");
@@ -134,35 +141,63 @@ describe("vsync diff (default, no --show-values)", () => {
     expect(out).toContain("2 tracked file(s), none differ");
   });
 
-  it("lists never-pushed tracked files under missing-remotely", async () => {
+  it("lists never-pushed tracked files under not-on-remote", async () => {
     await makeProject("unsynced", ["local-notes.txt"]);
     const out = await runDiff();
-    expect(out).toMatch(/Missing remotely[^\n]*:\s*\n\s*local-notes\.txt\b/);
+    expect(out).toMatch(/Not on remote[^\n]*:\s*\n\s*local-notes\.txt\b/);
   });
 });
 
 describe("vsync diff --show-values", () => {
-  it("shows a real line diff for a locally modified file", async () => {
+  it("shows a real line diff of local vs remote for a locally edited file (- remote, + local)", async () => {
     await makeProject("values", [".env"], [".env"]);
     await writeFile(join(projectRoot!, ".env"), "A=1\nB=CHANGED\nC=3\n");
 
     const out = await runDiff(true);
 
-    expect(out).toMatch(/── \.env \(local-modified\) ──/);
+    expect(out).toMatch(/── \.env \(differs\) ──/);
     expect(out).toMatch(/-\s*B=2/);
     expect(out).toMatch(/\+\s*B=CHANGED/);
     expect(out).toMatch(/\+\s*C=3/);
   });
 
-  it("shows remote-side changes against the local copy", async () => {
+  it("shows remote-side changes against the local copy (remote is the - side)", async () => {
     await makeProject("remote-edit", ["local-notes.txt"], ["local-notes.txt"]);
-    await writeFile(remotePathOf("remote-edit", "local-notes.txt"), "edited on the server\n");
+    await setRemoteContent("remote-edit", "local-notes.txt", "edited on the server\n");
 
     const out = await runDiff(true);
 
-    expect(out).toMatch(/── local-notes\.txt \(remote-modified\) ──/);
-    expect(out).toMatch(/-\s*just some notes/);
-    expect(out).toMatch(/\+\s*edited on the server/);
+    expect(out).toMatch(/── local-notes\.txt \(differs\) ──/);
+    expect(out).toMatch(/-\s*edited on the server/);
+    expect(out).toMatch(/\+\s*just some notes/);
+  });
+
+  it("summarizes binary files instead of line-diffing garbage", async () => {
+    await makeProject("binary", ["steady.txt"], ["steady.txt"]);
+    // Replace BOTH sides with binary content that differs (NUL bytes).
+    const localBin = Buffer.from([0x00, 0x01, 0x02, 0x03]);
+    await writeFile(join(projectRoot!, "steady.txt"), localBin);
+    await setRemoteContent("binary", "steady.txt", "text remote copy\n");
+    // Force the pair to "differ" with binary local content: overwrite the
+    // remote copy too (binary), then align the index so status = differs.
+    const remoteBin = Buffer.from([0x00, 0x0a, 0x0b]);
+    await writeFile(remotePathOf("binary", "steady.txt"), remoteBin);
+    const info = await stat(remotePathOf("binary", "steady.txt"));
+    const indexPath = indexPathOf("binary");
+    const index = JSON.parse(await readFile(indexPath, "utf8")) as {
+      files: Record<string, { hash: string; size: number; pushedAt: string }>;
+    };
+    index.files["steady.txt"] = {
+      hash: await hashFile(remotePathOf("binary", "steady.txt")),
+      size: info.size,
+      pushedAt: new Date().toISOString(),
+    };
+    await writeFile(indexPath, JSON.stringify(index, null, 2) + "\n");
+
+    const out = await runDiff(true);
+
+    expect(out).toMatch(/── steady\.txt \(differs\) ──/);
+    expect(out).toMatch(/binary — local \d+ B, remote \d+ B pushed/);
   });
 
   it("notes a missing remote copy instead of crashing", async () => {
@@ -231,7 +266,7 @@ describe("vsync diff — guards", () => {
 describe("vsync diff --json", () => {
   it("emits differing files + candidates; no patches without --show-values", async () => {
     await makeProject("json-plain", [".env", "steady.txt"], [".env", "steady.txt"]);
-    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // local-modified
+    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // differs
 
     const parsed = JSON.parse(await runDiff(false, true)) as {
       projectId: string;
@@ -243,7 +278,7 @@ describe("vsync diff --json", () => {
 
     expect(parsed.projectId).toBe("json-plain");
     expect(parsed.backend).toBe("local-fs");
-    expect(parsed.files).toEqual([{ path: ".env", status: "local-modified" }]);
+    expect(parsed.files).toEqual([{ path: ".env", status: "differs" }]);
     expect(parsed.candidates.some((c) => c.path === "local-notes.txt")).toBe(true);
     expect(parsed.patches).toBeUndefined(); // values stay hidden
   });

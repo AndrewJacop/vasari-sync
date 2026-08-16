@@ -1,12 +1,14 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runStatusCommand } from "../../src/commands/status.js";
+import { runPushCommand } from "../../src/commands/push.js";
 import { hashFile } from "../../src/core/hash.js";
-import { readManifest, writeManifest, type ManifestFileEntry } from "../../src/core/manifest.js";
+import { writeManifest } from "../../src/core/manifest.js";
+import { indexKeyFor } from "../../src/core/remoteIndex.js";
 import { remoteKeyFor } from "../../src/utils/paths.js";
 
 const execFileAsync = promisify(execFile);
@@ -18,10 +20,9 @@ let logs: string[][] = [];
 
 /**
  * A real git project the way `vsync init` leaves it, backed by a local-fs
- * backend. Tracked files start UNSYNCED unless `pushed` names them — for
- * those, the file is copied to the remote tree and the manifest entry gets
- * lastSyncedHash/lastSyncedAt stamped, exactly what a successful `push`
- * (Task 14) will do.
+ * backend. Files named in `pushed` are synced with the REAL push (silent,
+ * auto-confirmed) — remote copies plus the remote index, exactly the state
+ * a status/pull starts from.
  */
 async function makeProject(name: string, tracked: string[], pushed: string[] = []): Promise<void> {
   projectRoot = await mkdtemp(join(tmpdir(), `vsync-status-${name}-`));
@@ -37,29 +38,14 @@ async function makeProject(name: string, tracked: string[], pushed: string[] = [
   await writeFile(join(projectRoot, "sub", "app.local.json"), '{ "debug": true }\n');
 
   await writeGlobalProfile();
+  await writeManifest(projectRoot, {
+    projectId: name,
+    backend: "local-fs",
+    files: tracked.map((path) => ({ path })),
+  });
 
-  const files: ManifestFileEntry[] = [];
-  for (const rel of tracked) {
-    const abs = join(projectRoot, rel);
-    const info = await stat(abs);
-    files.push({
-      path: rel,
-      hash: await hashFile(abs),
-      size: info.size,
-      mtimeLocal: info.mtime.toISOString(),
-    });
-  }
-  await writeManifest(projectRoot, { projectId: name, backend: "local-fs", files });
-
-  for (const rel of pushed) {
-    const dest = remotePathOf(name, rel);
-    await mkdir(dirname(dest), { recursive: true });
-    await copyFile(join(projectRoot, rel), dest);
-    const manifest = (await readManifest(projectRoot))!;
-    const entry = manifest.files.find((f) => f.path === rel)!;
-    entry.lastSyncedHash = entry.hash;
-    entry.lastSyncedAt = new Date().toISOString();
-    await writeManifest(projectRoot, manifest);
+  if (pushed.length > 0) {
+    await runPushCommand(projectRoot, true, homeDir, "silent");
   }
 }
 
@@ -69,6 +55,29 @@ async function makeProject(name: string, tracked: string[], pushed: string[] = [
  * deleted-remote test first failed). */
 function remotePathOf(name: string, rel: string): string {
   return join(remoteDir!, remoteKeyFor(name, rel));
+}
+
+/** Where the backend stores this project's sidecar index. */
+function indexPathOf(name: string): string {
+  return join(remoteDir!, indexKeyFor(name));
+}
+
+/** Simulates "the other machine pushed new content": updates the remote
+ * file AND its index entry, exactly what a real push does. */
+async function setRemoteContent(name: string, rel: string, content: string): Promise<void> {
+  const dest = remotePathOf(name, rel);
+  await writeFile(dest, content);
+  const info = await stat(dest);
+  const indexPath = indexPathOf(name);
+  const index = JSON.parse(await readFile(indexPath, "utf8")) as {
+    files: Record<string, { hash: string; size: number; pushedAt: string }>;
+  };
+  index.files[rel] = {
+    hash: await hashFile(dest),
+    size: info.size,
+    pushedAt: new Date().toISOString(),
+  };
+  await writeFile(indexPath, JSON.stringify(index, null, 2) + "\n");
 }
 
 /** Minimal global config so backendResolver finds the profile + no secrets. */
@@ -109,25 +118,25 @@ afterEach(async () => {
 });
 
 describe("vsync status", () => {
-  it("categorizes unchanged / locally modified / remote modified / conflict", async () => {
+  it("categorizes differs / missing-locally / remote-missing / in-sync (no who-changed split)", async () => {
     const tracked = [".env", "local-notes.txt", "sub/app.local.json", "steady.txt"];
     await makeProject("mixed", tracked, [...tracked]);
 
-    // steady.txt: untouched on both sides → unchanged.
-    // local-notes.txt: edited locally only.
+    // steady.txt: untouched on both sides → in sync.
+    // local-notes.txt: edited locally → differs.
     await writeFile(join(projectRoot!, "local-notes.txt"), "edited locally\n");
-    // sub/app.local.json: edited remotely only.
-    await writeFile(remotePathOf("mixed", "sub/app.local.json"), '{"debug":false}\n');
-    // .env: edited BOTH sides → conflict.
+    // sub/app.local.json: edited on the other machine → also just differs.
+    await setRemoteContent("mixed", "sub/app.local.json", '{"debug":false}\n');
+    // .env: edited on BOTH sides → still just differs (single-user model).
     await writeFile(join(projectRoot!, ".env"), "A=2\n");
-    await writeFile(remotePathOf("mixed", ".env"), "REMOTE=1\n");
+    await setRemoteContent("mixed", ".env", "REMOTE=1\n");
 
     const out = await runStatus();
 
     expect(out).toContain("Project 'mixed' (backend: local-fs) — 4 tracked file(s)");
-    expect(out).toMatch(/Conflicts[^\n]*:\s*\n\s*\.env\b/);
-    expect(out).toMatch(/Changed locally[^\n]*:\s*\n\s*local-notes\.txt\b/);
-    expect(out).toMatch(/Changed remotely[^\n]*:\s*\n\s*sub\/app\.local\.json\b/);
+    expect(out).toMatch(/Differ \(local ≠ remote[^\n]*:\s*\n\s*\.env\b/);
+    expect(out).toMatch(/\n\s*local-notes\.txt\b/);
+    expect(out).toMatch(/\n\s*sub\/app\.local\.json\b/);
     expect(out).toMatch(/In sync:\s*\n\s*steady\.txt\b/);
     // Paths and statuses only — never contents ("edited locally" etc. are
     // the literal fixture strings; if any leaked into output, fail).
@@ -135,17 +144,23 @@ describe("vsync status", () => {
     expect(out).not.toContain("REMOTE=1");
   });
 
-  it("reports a never-synced tracked file as remote-missing", async () => {
+  it("reports a never-pushed tracked file as not on remote", async () => {
     await makeProject("unsynced", ["local-notes.txt"]);
     const out = await runStatus();
-    expect(out).toMatch(/Missing remotely[^\n]*:\s*\n\s*local-notes\.txt \(not pushed yet\)/);
+    expect(out).toMatch(/Not on remote[^\n]*:\s*\n\s*local-notes\.txt\s*$/m);
   });
 
-  it("reports a synced-then-remote-deleted file as remote-missing without a note", async () => {
+  it("reports a remotely-deleted file (gone from the index) as not on remote", async () => {
     await makeProject("deleted-remote", [".env"], [".env"]);
+    const index = JSON.parse(await readFile(indexPathOf("deleted-remote"), "utf8")) as {
+      files: Record<string, unknown>;
+    };
+    delete index.files[".env"];
     await rm(remotePathOf("deleted-remote", ".env"));
+    await writeFile(indexPathOf("deleted-remote"), JSON.stringify(index, null, 2) + "\n");
+
     const out = await runStatus();
-    expect(out).toMatch(/Missing remotely[^\n]*:\s*\n\s*\.env\s*$/m);
+    expect(out).toMatch(/Not on remote[^\n]*:\s*\n\s*\.env\s*$/m);
     expect(out).not.toContain("not pushed yet");
   });
 
@@ -179,7 +194,12 @@ describe("vsync status --json", () => {
     const tracked = [".env", "local-notes.txt", "steady.txt"];
     await makeProject("json-mixed", tracked, [...tracked]);
     await writeFile(join(projectRoot!, "local-notes.txt"), "edited locally\n");
-    await rm(remotePathOf("json-mixed", ".env")); // synced-then-deleted remotely
+    const index = JSON.parse(await readFile(indexPathOf("json-mixed"), "utf8")) as {
+      files: Record<string, unknown>;
+    };
+    delete index.files[".env"]; // synced-then-deleted remotely
+    await rm(remotePathOf("json-mixed", ".env"));
+    await writeFile(indexPathOf("json-mixed"), JSON.stringify(index, null, 2) + "\n");
 
     const out = await runStatus(true);
 
@@ -193,17 +213,17 @@ describe("vsync status --json", () => {
     expect(parsed.files).toEqual(
       expect.arrayContaining([
         { path: ".env", status: "remote-missing" },
-        { path: "local-notes.txt", status: "local-modified" },
+        { path: "local-notes.txt", status: "differs" },
         { path: "steady.txt", status: "unchanged" },
       ]),
     );
-    // One JSON object, nothing else on stdout.
     expect(out.trim().startsWith("{")).toBe(true);
   });
 
-  it("notes never-pushed files inside their JSON entry", async () => {
-    await makeProject("json-unsynced", ["local-notes.txt"]);
+  it("notes a file that exists nowhere inside its JSON entry", async () => {
+    await makeProject("json-nowhere", [".env"]);
+    await rm(join(projectRoot!, ".env"));
     const parsed = JSON.parse(await runStatus(true)) as { files: { note?: string }[] };
-    expect(parsed.files[0].note).toBe("not pushed yet");
+    expect(parsed.files[0].note).toBe("no local copy either");
   });
 });
