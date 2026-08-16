@@ -10,6 +10,7 @@ import { runRmCommand } from "./commands/rm.js";
 import { runDiffCommand } from "./commands/diff.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runPushCommand } from "./commands/push.js";
+import { runPullCommand } from "./commands/pull.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -117,6 +118,19 @@ program
   .action(async (options: { force?: boolean }) => {
     try {
       await runPushCommand(process.cwd(), options.force === true);
+    } catch (err) {
+      console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("pull")
+  .description("Download tracked files that changed on the backend since the last sync")
+  .option("-f, --force", "overwrite local-only changes (remote version wins)")
+  .action(async (options: { force?: boolean }) => {
+    try {
+      await runPullCommand(process.cwd(), options.force === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
