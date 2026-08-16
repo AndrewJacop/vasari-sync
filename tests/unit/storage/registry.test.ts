@@ -13,6 +13,7 @@ let workDir: string;
 const MINIMAL_CONFIG: Record<string, BackendConfig> = {
   "local-fs": { basePath: () => storageDir }, // replaced in beforeAll
   s3: { region: "us-east-1", bucket: "test-bucket", accessKeyId: "a", secretAccessKey: "s" },
+  sftp: { host: "sftp.example.com", username: "u", password: "p", remoteBasePath: "/upload" },
 };
 
 beforeAll(async () => {

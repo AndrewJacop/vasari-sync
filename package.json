@@ -21,10 +21,12 @@
   "private": true,
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "ssh2-sftp-client": "^12.1.1"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "@types/ssh2-sftp-client": "^9.0.6",
     "@vitest/coverage-v8": "^4.1.10",
     "aws-sdk-client-mock": "^4.1.0",
     "eslint": "^10.8.1",
