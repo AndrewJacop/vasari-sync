@@ -13,7 +13,6 @@ import {
   writeManifest,
   type ManifestFileEntry,
 } from "../../src/core/manifest.js";
-import { writeProjectConfig } from "../../src/core/projectConfig.js";
 import { remoteKeyFor } from "../../src/utils/paths.js";
 
 const execFileAsync = promisify(execFile);
@@ -57,11 +56,6 @@ async function makeProject(
     await writeFile(abs, fileContents[rel]);
   }
 
-  await writeProjectConfig(projectRoot, {
-    projectId: name,
-    backend: "local-fs",
-    settings: { basePath: remoteDir },
-  });
   await writeGlobalProfile();
 
   const files: ManifestFileEntry[] = [];

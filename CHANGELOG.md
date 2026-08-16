@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-16
+
+Cross-device sync rebuilt around one principle: **the manifest never
+reaches git** — it lists secret file paths, so it travels backend-side
+and is rebuilt on each machine.
+
+### Added
+
+- `vsync link <projectId>` — machine-B bootstrap: rebuilds the manifest
+  from the backend listing, registers the project, offers an immediate
+  pull. `init` and `link` keep `.vsync/` in the project `.gitignore`.
+- `vsync config` (github-repo): reuses the GitHub CLI login token when
+  `gh` is signed in (confirm prompt), defaults `owner` to the `gh` login,
+  and prints a `gh auth login` tip when no CLI login exists.
+- `vsync config`: the github-repo storage-repo field accepts pasted
+  SSH/HTTPS URLs, parsed to `owner`/`repo` automatically.
+
+### Changed
+
+- **Removed the per-project `.vsync/config.json`.** It was a snapshot of
+  the global profile that could silently go stale; backend wiring now
+  resolves at runtime from the manifest's backend name + the global
+  profile + global secrets. Delete any leftover copies.
+- `init` writes only the manifest; no project file besides it.
+
+### Fixed
+
+- github-repo: connection test accepts an **empty** repository (GitHub
+  reports a default branch that doesn't exist until the first push).
+- github-repo: Octokit's request-log no longer prints expected 404
+  existence checks to the terminal.
+- `link`: backend handlers are constructed with profile secrets merged
+  in (constructor validation crashed on token-less settings).
+- Candidate scanner never offers `.vsync/` metadata as sync candidates.
+
 ## [0.1.0] - 2026-08-16
 
 Initial release.

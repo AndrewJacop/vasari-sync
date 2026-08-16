@@ -54,6 +54,10 @@ export const SUPPRESS_DIR_NAMES: readonly string[] = [
   "target",
   "vendor",
   "__pycache__",
+  // vsync's own metadata dir: if a user ignores `.vsync/` (project or
+  // global gitignore), its manifest/config must never become sync
+  // candidates — that's the tool syncing its own state book.
+  ".vsync",
   // Common cache/log directories (AGENTS.md leaves the set open — extend freely).
   ".cache",
   ".gradle",

@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { appendFile, readFile } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /**
  * A project ID becomes a directory segment in every remote key, so it
@@ -31,11 +32,23 @@ export function remoteKeyFor(projectId: string, relPath: string): string {
 }
 
 /**
- * Converts a user-supplied path (relative or absolute, any separator style)
- * to the project-relative posix-style string used in manifests and remote
- * keys. Throws when the path points outside the project root — tracked
- * files must live inside the project.
+ * Keeps `.vsync/` out of git: the manifest lists secret file paths, so it
+ * must never ride a `git push` (cross-device bootstrap is `vsync link`,
+ * which rebuilds the manifest from the backend). Appends the ignore
+ * line when missing; idempotent, never throws for a missing .gitignore
+ * (appendFile creates it — harmless in non-git directories).
  */
+export async function ensureVsyncIgnored(projectRoot: string): Promise<void> {
+  const gitignore = join(projectRoot, ".gitignore");
+  let existing = "";
+  try {
+    existing = await readFile(gitignore, "utf8");
+  } catch {
+    // No .gitignore yet — the append below creates one.
+  }
+  if (existing.split(/\r?\n/).some((l) => l.trim() === ".vsync" || l.trim() === ".vsync/")) return;
+  await appendFile(gitignore, `${existing.endsWith("\n") || existing === "" ? "" : "\n"}.vsync/\n`);
+}
 export function toProjectRelativePath(projectRoot: string, input: string): string {
   const abs = resolve(projectRoot, input);
   const rel = relative(projectRoot, abs);

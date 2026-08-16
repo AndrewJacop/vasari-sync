@@ -8,7 +8,6 @@ import { runAddCommand } from "../../src/commands/add.js";
 import { runRmCommand } from "../../src/commands/rm.js";
 import { hashFile } from "../../src/core/hash.js";
 import { readManifest, writeManifest, type ManifestFileEntry } from "../../src/core/manifest.js";
-import { writeProjectConfig } from "../../src/core/projectConfig.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,11 +25,6 @@ async function makeProject(name: string, tracked: string[] = []): Promise<string
   await mkdir(join(root, "sub"), { recursive: true });
   await writeFile(join(root, "sub", "app.local.json"), '{ "debug": true }\n');
 
-  await writeProjectConfig(root, {
-    projectId: name,
-    backend: "local-fs",
-    settings: { basePath: join(root, "..", "nonexistent-remote") },
-  });
   const files: ManifestFileEntry[] = [];
   for (const rel of tracked) {
     const abs = join(root, rel);

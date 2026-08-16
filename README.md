@@ -77,19 +77,20 @@ vsync diff          # differing paths + untracked candidates
 vsync push
 ```
 
-`init` writes `.vsync/config.json` (backend settings, no secrets) and
-`.vsync/manifest.json` (tracked paths + hashes). **Commit both** — they
-ride along with `git clone` to every other machine.
+`init` writes `.vsync/manifest.json` (backend name, tracked paths +
+hashes) and keeps `.vsync/` out of git — the manifest lists your secret
+_paths_, so it must never reach the repo. Nothing machine-specific
+enters the project: each machine resolves settings and credentials from
+its own `~/.vsync/config.json` profile.
 
 **Machine B (or a fresh clone):**
 
 ```sh
 git clone <your-repo> my-project && cd my-project
 
-vsync config        # once per machine — the project config already
-                    # names the backend; this just saves credentials
-
-vsync pull          # downloads every tracked file the clone is missing
+vsync config        # once per machine: save backend settings + credentials
+vsync link my-project   # rebuild the manifest from the backend, then pull
+                        # (project ID = what `vsync list` shows on machine A)
 ```
 
 From then on, the loop on any machine is: work → `vsync push`; sit down
@@ -101,13 +102,13 @@ Full command reference: [docs/commands.md](docs/commands.md).
 
 ## Supported backends
 
-| Backend       | For                                                                                                                                | Fields prompted by `vsync config`                                                                                |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `s3`          | AWS S3, MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, any S3-compatible store                                           | `region`, `bucket`, `endpoint` (blank = AWS), `accessKeyId` \*, `secretAccessKey` \*, `forcePathStyle`           |
-| `sftp`        | Your own SSH/SFTP server                                                                                                           | `host`, `port` (default 22), `username`, `password` \*, `privateKeyPath` (instead of password), `remoteBasePath` |
-| `webdav`      | Nextcloud, Apache/nginx DAV, any WebDAV share                                                                                      | `url`, `username`, `password` \*, `remoteBasePath`                                                               |
-| `github-repo` | A private GitHub repo — the only backend with **native versioning** (git history)                                                  | `owner`, `repo`, `branch` (blank = repo default), `token` \*, `remoteBasePath` (optional)                        |
-| `local-fs`    | A plain directory — test/eval backend; also handy for sync via a mounted/synced folder (Dropbox-style folders, mounted NAS shares) | `basePath`                                                                                                       |
+| Backend       | For                                                                                                                                | Fields prompted by `vsync config`                                                                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `s3`          | AWS S3, MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, any S3-compatible store                                           | `region`, `bucket`, `endpoint` (blank = AWS), `accessKeyId` \*, `secretAccessKey` \*, `forcePathStyle`                                                                     |
+| `sftp`        | Your own SSH/SFTP server                                                                                                           | `host`, `port` (default 22), `username`, `password` \*, `privateKeyPath` (instead of password), `remoteBasePath`                                                           |
+| `webdav`      | Nextcloud, Apache/nginx DAV, any WebDAV share                                                                                      | `url`, `username`, `password` \*, `remoteBasePath`                                                                                                                         |
+| `github-repo` | A private GitHub repo — the only backend with **native versioning** (git history)                                                  | `owner` (defaults to `gh` login), `repo` (name or URL), `branch` (blank = repo default), `token` \* (reused from the `gh` CLI when signed in), `remoteBasePath` (optional) |
+| `local-fs`    | A plain directory — test/eval backend; also handy for sync via a mounted/synced folder (Dropbox-style folders, mounted NAS shares) | `basePath`                                                                                                                                                                 |
 
 \* = secret; stored only in `~/.vsync/config.json` (0600), never in the
 project config that gets committed.
@@ -118,11 +119,10 @@ several projects can share one bucket/server without colliding.
 
 ## What lives where
 
-| Path                             | Contents                                                      | Committed to git? |
-| -------------------------------- | ------------------------------------------------------------- | ----------------- |
-| `.vsync/manifest.json` (project) | tracked paths, content hashes, last-synced timestamps         | **yes**           |
-| `.vsync/config.json` (project)   | projectId, backend name, non-secret backend settings          | **yes**           |
-| `~/.vsync/config.json` (machine) | backend credentials (0600), project registry for `vsync list` | no                |
+| Path                             | Contents                                                        | Committed to git?                              |
+| -------------------------------- | --------------------------------------------------------------- | ---------------------------------------------- |
+| `.vsync/manifest.json` (project) | backend name, tracked paths, content hashes, last-synced times  | **no** — git-ignored, rebuilt via `vsync link` |
+| `~/.vsync/config.json` (machine) | backend profiles, credentials (0600), registry for `vsync list` | no                                             |
 
 ## Which files does `init` suggest?
 

@@ -46,6 +46,20 @@ credentials, test the connection, save. Interactive.
   fields; password-style prompts show `(blank keeps existing)` so you can
   keep stored secrets without retyping them.
 
+#### GitHub CLI reuse (`github-repo`)
+
+If the GitHub CLI (`gh`) is installed and signed in, `vsync config` offers
+its stored token — no personal access token needed. The owner field
+defaults to your `gh` login, and the repo field accepts a bare name or a
+pasted URL (`git@github.com:owner/repo.git`, `https://github.com/owner/repo`),
+which is parsed to `owner`/`repo` automatically. Without a `gh` login, a
+tip points at `gh auth login`; when a reused token fails the connection
+test, the failure suggests `gh auth status` (scopes) or declining the
+reuse to enter a PAT.
+
+An **empty** repository is a valid target — GitHub creates the default
+branch on vsync's first push, so the connection test reports it as OK.
+
 ### Flags
 
 | Flag                      | Effect                                       |
@@ -56,13 +70,13 @@ credentials, test the connection, save. Interactive.
 
 ### Backend fields (prompt order)
 
-| Backend       | Fields (asterisk = secret)                                                                                                                                       |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `s3`          | `region`, `bucket`, `endpoint` (blank = AWS), `accessKeyId` \*, `secretAccessKey` \*, `forcePathStyle` (yes/no — enable for MinIO and most S3-compatible stores) |
-| `sftp`        | `host`, `port` (blank = 22), `username`, `password` \*, `privateKeyPath` (optional, instead of password), `remoteBasePath`                                       |
-| `webdav`      | `url`, `username` (optional), `password` \*, `remoteBasePath`                                                                                                    |
-| `github-repo` | `owner`, `repo`, `branch` (blank = repo default), `token` \*, `remoteBasePath` (optional)                                                                        |
-| `local-fs`    | `basePath` (directory the files are stored under)                                                                                                                |
+| Backend       | Fields (asterisk = secret)                                                                                                                                                                      |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `s3`          | `region`, `bucket`, `endpoint` (blank = AWS), `accessKeyId` \*, `secretAccessKey` \*, `forcePathStyle` (yes/no — enable for MinIO and most S3-compatible stores)                                |
+| `sftp`        | `host`, `port` (blank = 22), `username`, `password` \*, `privateKeyPath` (optional, instead of password), `remoteBasePath`                                                                      |
+| `webdav`      | `url`, `username` (optional), `password` \*, `remoteBasePath`                                                                                                                                   |
+| `github-repo` | `owner` (defaults to `gh` login), `repo` (bare name or paste its URL), `branch` (blank = repo default), `token` \* (reused from the `gh` CLI login when available), `remoteBasePath` (optional) |
+| `local-fs`    | `basePath` (directory the files are stored under)                                                                                                                                               |
 
 ### Examples
 
@@ -120,8 +134,10 @@ git repository). Interactive. Steps:
    `*.pem`, `*.key`, `id_rsa*`, `config.local.*` (each ≤ 50 KB) are
    sorted to the top and **pre-checked**. Toggle anything, then confirm.
 
-On confirm: writes `.vsync/config.json` + `.vsync/manifest.json`, and
-registers the project in `~/.vsync/config.json` (what `vsync list` shows).
+On confirm: writes `.vsync/manifest.json` (backend name + tracked-file
+ledger) and registers the project in `~/.vsync/config.json` (what
+`vsync list` shows). No per-project config file is written — backend
+settings/credentials resolve from the global profile at runtime.
 
 Re-running `init` on an initialized project warns first (re-initializing
 replaces the tracked-file list; deselected files are untracked, never
@@ -145,6 +161,38 @@ A project with no ignored files skips the checklist:
 Initialized 'my-project' (backend: s3).
 No files tracked yet — add some later with `vsync add <path>` or re-run `vsync init`.
 ```
+
+---
+
+## `vsync link <projectId>`
+
+The machine-B half of the model. The manifest never travels through git
+(it lists secret file _paths_); `init` and `link` keep `.vsync/` in the
+project's `.gitignore`. On a fresh clone, `link` rebuilds the manifest from
+the backend: every file under the project's `<projectId>/` prefix becomes
+a tracked entry, the project joins `~/.vsync/config.json`, and vsync offers
+to pull immediately.
+
+The project ID is whatever `vsync list` shows on the machine that pushed
+(it defaults to the project folder name at `init` time). Backend profiles
+are scanned in config order — the first profile with files under the ID's
+prefix wins.
+
+### Example (fresh clone)
+
+```console
+$ vsync link my-project
+Linked 'my-project' (backend: s3) — 2 tracked file(s): .env, local-notes.txt.
+? Pull the files now? Yes
+  .env — pulled
+  local-notes.txt — pulled
+Summary: 2 pulled
+```
+
+Declining the pull leaves placeholder hashes in the manifest; if local
+copies of the files already exist, `vsync status` reports them as
+conflicts until a pull (or `--force`) resolves them — vsync never
+silently overwrites either side.
 
 ---
 

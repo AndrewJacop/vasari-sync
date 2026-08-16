@@ -1,32 +1,48 @@
 import { createBackend } from "../storage/registry.js";
 import type { BackendConfig, StorageBackend } from "../storage/types.js";
-import { readGlobalConfig } from "./globalConfig.js";
-import { readProjectConfig } from "./projectConfig.js";
+import { readGlobalConfig, type GlobalConfig } from "./globalConfig.js";
+import { readManifest } from "./manifest.js";
+
+/** Constructs a backend handler from a profile: settings merged with that
+ * backend's secrets from the global secret store. Handler constructors
+ * validate required fields (token, credentials), so a secret-less merge
+ * throws before any API call — never construct from settings alone. */
+export function createBackendFromProfile(
+  backendName: string,
+  global: GlobalConfig,
+): StorageBackend {
+  const profile = global.profiles[backendName];
+  const secrets: Record<string, string> = {};
+  for (const [key, value] of Object.entries(global.secrets)) {
+    if (key.startsWith(`${backendName}/`)) {
+      secrets[key.slice(backendName.length + 1)] = value;
+    }
+  }
+  return createBackend(backendName, {
+    ...(profile?.settings ?? {}),
+    ...secrets,
+  } as BackendConfig);
+}
 
 /**
- * Resolves the storage backend for an initialized project: the project
- * config's backend name + settings, with that backend's secrets merged in
- * from the global secret store (`${backend}/…` keys). The committed project
- * config stays secret-free while credentials stay global — this is the same
- * resolution `init` uses, extracted here so push/pull resolve identically.
+ * Resolves the storage backend for an initialized project: the manifest's
+ * backend name + that backend's global profile settings and secrets. All
+ * wiring lives machine-side (global config) — the committed manifest only
+ * names the backend.
  */
 export async function resolveBackend(
   projectRoot: string,
   homeDir?: string,
 ): Promise<StorageBackend> {
-  const projectConfig = await readProjectConfig(projectRoot);
-  if (!projectConfig) {
-    throw new Error("No .vsync/config.json found — run `vsync init` in this project first.");
+  const manifest = await readManifest(projectRoot);
+  if (!manifest) {
+    throw new Error("No .vsync/manifest.json found — run `vsync init` in this project first.");
   }
   const globalConfig = await readGlobalConfig(homeDir);
-  const secrets: Record<string, string> = {};
-  for (const [key, value] of Object.entries(globalConfig.secrets)) {
-    if (key.startsWith(`${projectConfig.backend}/`)) {
-      secrets[key.slice(projectConfig.backend.length + 1)] = value;
-    }
+  if (!globalConfig.profiles[manifest.backend]) {
+    throw new Error(
+      `No saved profile for '${manifest.backend}' on this machine — run \`vsync config\` first.`,
+    );
   }
-  return createBackend(projectConfig.backend, {
-    ...projectConfig.settings,
-    ...secrets,
-  } as BackendConfig);
+  return createBackendFromProfile(manifest.backend, globalConfig);
 }

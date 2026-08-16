@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { runAddCommand } from "./commands/add.js";
 import { runConfigCommand } from "./commands/config.js";
 import { runInitCommand } from "./commands/init.js";
+import { runLinkCommand } from "./commands/link.js";
 import { runRmCommand } from "./commands/rm.js";
 import { runDiffCommand } from "./commands/diff.js";
 import { runStatusCommand } from "./commands/status.js";
@@ -144,6 +145,21 @@ program
   .action(async () => {
     try {
       await runListCommand();
+    } catch (err) {
+      console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("link")
+  .description(
+    "Adopt an existing backend project into this clone: rebuild the manifest from the backend and optionally pull",
+  )
+  .argument("<projectId>", "project ID (see `vsync list` on the machine that pushed)")
+  .action(async (projectId: string) => {
+    try {
+      await runLinkCommand(process.cwd(), projectId);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;

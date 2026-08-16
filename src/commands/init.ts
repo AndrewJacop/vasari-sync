@@ -5,30 +5,24 @@ import { scanCandidates } from "../core/candidateScanner.js";
 import { readGlobalConfig, upsertProjectEntry, writeGlobalConfig } from "../core/globalConfig.js";
 import { hashFile } from "../core/hash.js";
 import { readManifest, writeManifest, type ManifestFileEntry } from "../core/manifest.js";
-import { readProjectConfig, writeProjectConfig } from "../core/projectConfig.js";
 import { availableBackends, createBackend } from "../storage/registry.js";
 import type { BackendConfig } from "../storage/types.js";
-import { validateProjectId } from "../utils/paths.js";
+import { validateProjectId, ensureVsyncIgnored } from "../utils/paths.js";
 
 /**
  * `vsync init` — first-time setup in a project: pick a project ID and
- * backend, select ignored files worth syncing, then write the manifest +
- * project config and register the project globally.
- *
- * Backend settings/credentials come from the global profile saved by
- * `vsync config` — init never prompts for credentials itself, so secrets
- * can never leak into the committed project config.
+ * backend, select ignored files worth syncing, then write the manifest and
+ * register the project globally. Backend settings/credentials live only in
+ * the global profile saved by `vsync config` — nothing machine-specific is
+ * written into the project.
  */
 export async function runInitCommand(projectRoot: string, homeDir?: string): Promise<void> {
   const globalConfig = await readGlobalConfig(homeDir);
 
-  if (
-    (await readProjectConfig(projectRoot)) !== null ||
-    (await readManifest(projectRoot)) !== null
-  ) {
+  if ((await readManifest(projectRoot)) !== null) {
     console.warn(
-      `[vsync] This project is already initialized. Re-initializing replaces the project ` +
-        `config, the manifest, and the tracked-file list — files you don't re-select are ` +
+      `[vsync] This project is already initialized. Re-initializing replaces the manifest ` +
+        `and the tracked-file list — files you don't re-select are ` +
         `untracked (local files are never deleted).`,
     );
     const proceed = await confirm({ message: "Re-initialize anyway?", default: false });
@@ -123,12 +117,10 @@ export async function runInitCommand(projectRoot: string, homeDir?: string): Pro
     });
   }
 
-  await writeProjectConfig(projectRoot, {
-    projectId,
-    backend: profile.backend,
-    settings: profile.settings,
-  });
   await writeManifest(projectRoot, { projectId, backend, files });
+  // The manifest lists secret paths — it must never reach git. Cross-device
+  // bootstrap is `vsync link`, which rebuilds it from the backend.
+  await ensureVsyncIgnored(projectRoot);
   // Explicit undefined keeps a stale timestamp from surviving re-init.
   upsertProjectEntry(globalConfig, {
     projectId,

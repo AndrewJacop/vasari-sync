@@ -24,7 +24,17 @@ import { runInitCommand } from "../../src/commands/init.js";
 import { hashFile } from "../../src/core/hash.js";
 import { readGlobalConfig, writeGlobalConfig } from "../../src/core/globalConfig.js";
 import { readManifest } from "../../src/core/manifest.js";
-import { readProjectConfig } from "../../src/core/projectConfig.js";
+import { access } from "node:fs/promises";
+
+/** True when a path exists — asserting config.json is never created. */
+async function exists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -74,7 +84,7 @@ afterEach(async () => {
 });
 
 describe("vsync init — first run", () => {
-  it("creates manifest, project config, and global registry entry", async () => {
+  it("creates manifest and a global registry entry — no project config.json", async () => {
     projectRoot = await makeProject("app");
     script("my-app", "local-fs", [".env"]);
 
@@ -94,11 +104,8 @@ describe("vsync init — first run", () => {
     expect(entry.lastSyncedHash).toBeUndefined();
     expect(entry.lastSyncedAt).toBeUndefined();
 
-    expect(await readProjectConfig(projectRoot)).toEqual({
-      projectId: "my-app",
-      backend: "local-fs",
-      settings: { basePath: storageDir },
-    });
+    // The wiring snapshot is gone: init writes ONLY the manifest.
+    expect(await exists(join(projectRoot, ".vsync", "config.json"))).toBe(false);
 
     const globalConfig = await readGlobalConfig(home);
     expect(globalConfig.projects).toEqual([
@@ -165,7 +172,7 @@ describe("vsync init — first run", () => {
     );
     // Nothing was written.
     expect(await readManifest(projectRoot)).toBeNull();
-    expect(await readProjectConfig(projectRoot)).toBeNull();
+    expect(await exists(join(projectRoot, ".vsync", "config.json"))).toBe(false);
   });
 });
 
@@ -176,7 +183,6 @@ describe("vsync init — re-running on an initialized project", () => {
     await runInitCommand(projectRoot, home);
 
     const manifestBefore = await readFile(join(projectRoot, ".vsync", "manifest.json"), "utf8");
-    const configBefore = await readFile(join(projectRoot, ".vsync", "config.json"), "utf8");
 
     vi.mocked(console.log).mockClear();
     script(false); // "Re-initialize anyway?" → no
@@ -187,7 +193,6 @@ describe("vsync init — re-running on an initialized project", () => {
     expect(await readFile(join(projectRoot, ".vsync", "manifest.json"), "utf8")).toBe(
       manifestBefore,
     );
-    expect(await readFile(join(projectRoot, ".vsync", "config.json"), "utf8")).toBe(configBefore);
     const globalConfig = await readGlobalConfig(home);
     expect(globalConfig.projects).toHaveLength(1); // no duplicate entry either
   });
@@ -202,7 +207,6 @@ describe("vsync init — re-running on an initialized project", () => {
 
     const manifest = await readManifest(projectRoot);
     expect(manifest!.files).toEqual([]);
-    expect(await readProjectConfig(projectRoot)).toMatchObject({ projectId: "overwrite-app" });
     const globalConfig = await readGlobalConfig(home);
     expect(globalConfig.projects).toHaveLength(1);
   });
