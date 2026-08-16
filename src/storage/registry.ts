@@ -2,6 +2,7 @@ import { LocalFsHandler, type LocalFsConfig } from "./handlers/local-fs.js";
 import { S3Handler, type S3Config } from "./handlers/s3.js";
 import { SftpHandler, type SftpConfig } from "./handlers/sftp.js";
 import { WebDavHandler, type WebDavConfig } from "./handlers/webdav.js";
+import { GithubRepoHandler, type GithubRepoConfig } from "./handlers/github-repo.js";
 import type { BackendConfig, BackendFactory, StorageBackend } from "./types.js";
 
 /**
@@ -15,6 +16,7 @@ const registry: Record<string, BackendFactory> = {
   s3: (config) => new S3Handler(config as unknown as S3Config),
   sftp: (config) => new SftpHandler(config as unknown as SftpConfig),
   webdav: (config) => new WebDavHandler(config as unknown as WebDavConfig),
+  "github-repo": (config) => new GithubRepoHandler(config as unknown as GithubRepoConfig),
 };
 
 export function availableBackends(): string[] {

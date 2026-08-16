@@ -20,6 +20,7 @@ const MINIMAL_CONFIG: Record<string, BackendConfig> = {
     password: "p",
     remoteBasePath: "/vsync",
   },
+  "github-repo": { owner: "o", repo: "r", token: "t" },
 };
 
 beforeAll(async () => {
