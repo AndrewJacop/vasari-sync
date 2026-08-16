@@ -18,7 +18,7 @@ Conventions used below:
 Contents: [config](#vsync-config) · [init](#vsync-init) · [add](#vsync-add) ·
 [rm](#vsync-rm) · [status](#vsync-status) · [diff](#vsync-diff) ·
 [push](#vsync-push) · [pull](#vsync-pull) · [list](#vsync-list) ·
-[global flags](#global-flags)
+[update](#vsync-update) · [global flags](#global-flags)
 
 ---
 
@@ -134,13 +134,13 @@ git repository). Interactive. Steps:
    `*credential*`, `*.pem`, `*.key`, `id_rsa*`, `config.local.*` (each
    ≤ 50 KB) are tagged `suggested` and **pre-checked**.
 
-   | Key     | Action                                                       |
-   | ------- | ------------------------------------------------------------ |
-   | `↑`/`↓` | move (wraps around)                                          |
+   | Key     | Action                                                                                                                       |
+   | ------- | ---------------------------------------------------------------------------------------------------------------------------- |
+   | `↑`/`↓` | move (wraps around)                                                                                                          |
    | `space` | toggle a file; on a folder, select its whole subtree — or clear it when fully selected (`[ ]` none / `[~]` some / `[x]` all) |
-   | `→`/`←` | expand / collapse a folder (all start collapsed)             |
-   | `a`/`n` | select all / none                                            |
-   | `enter` | confirm                                                      |
+   | `→`/`←` | expand / collapse a folder (all start collapsed)                                                                             |
+   | `a`/`n` | select all / none                                                                                                            |
+   | `enter` | confirm                                                                                                                      |
 
    **Nested git repos:** directories the parent repo ignores that are
    themselves git repos (the umbrella pattern — parent `.gitignore` has
@@ -425,22 +425,54 @@ Summary: 2 pulled, 1 skipped (unchanged)
 
 ## `vsync list`
 
-Show every project registered on this machine (from `~/.vsync/config.json`):
-project ID, backend, last sync time, and local path. A project whose path
-no longer exists (moved or deleted) is marked `(missing on disk)` — never
-an error. Projects with no successful sync yet show `never synced`.
+Projects merged from **two sources**: every configured backend profile
+is listed live (each top-level `<projectId>/` prefix is a project) and
+the local registry (`~/.vsync/config.json`) adds the checkout path and
+last-sync time. A fresh machine therefore sees projects it has never
+linked — with a `vsync link <id>` hint — and machines that pushed show
+full rows. A registered path that no longer exists (moved/deleted) is
+marked `(missing on disk)`; a project absent from every backend shows
+`—` instead of a file count. Unreachable profiles are warned about and
+skipped — never an error.
 
-One registry entry exists per project ID: pulling the same project from a
-second checkout re-points the entry to that checkout's path.
+One registry entry exists per project ID: pulling the same project from
+a second checkout re-points the entry to that checkout's path.
 
 ### Example
 
 ```console
 $ vsync list
 Known projects (2):
-  my-project  s3   2026-08-15 10:22  D:\code\my-project
-  old-thing   sftp never synced      /home/me/old-thing  (missing on disk)
+  my-project   s3           3 files  2026-08-15 10:22  D:\code\my-project
+  OPTOLINK     github-repo  7 files  not linked here — run `vsync link OPTOLINK`
 ```
+
+With no profiles configured, `vsync list` points at `vsync init`; with
+profiles but nothing pushed yet, it points at `init` + `push`.
+
+---
+
+## `vsync update`
+
+Self-update: checks the npm registry for a newer `vasari-sync`, shows
+`current → latest`, asks for confirmation, and runs
+`npm install -g vasari-sync@latest`. `--yes` skips the prompt.
+
+```console
+$ vsync update
+? Update vasari-sync 0.3.0 → 0.4.0? Yes
+Updated vasari-sync 0.3.0 → 0.4.0.
+(the running session keeps the old version; new runs pick up the new one)
+```
+
+```console
+$ vsync update
+vasari-sync 0.4.0 — already up to date.
+```
+
+A registry/network outage fails with
+`[vsync] could not reach the npm registry — <cause>` rather than
+silently doing nothing.
 
 ---
 

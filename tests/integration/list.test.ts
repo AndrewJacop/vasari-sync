@@ -68,11 +68,13 @@ describe("vsync list", () => {
 
     expect(out).toContain("Known projects (3):");
     expect(out).toMatch(
-      new RegExp(`alpha\\s+local-fs\\s+2026-08-15 10:22\\s+${escapeRe(projectA)}$`, "m"),
+      new RegExp(`alpha\\s+local-fs\\s+—\\s+2026-08-15 10:22\\s+${escapeRe(projectA)}$`, "m"),
     );
-    expect(out).toMatch(new RegExp(`beta\\s+s3\\s+never synced\\s+${escapeRe(projectB)}$`, "m"));
     expect(out).toMatch(
-      /ghost\s+webdav\s+never synced\s+\S+vsync-list-gone-404\s+\(missing on disk\)/,
+      new RegExp(`beta\\s+s3\\s+—\\s+never synced\\s+${escapeRe(projectB)}$`, "m"),
+    );
+    expect(out).toMatch(
+      /ghost\s+webdav\s+—\s+never synced\s+\S+vsync-list-gone-404\s+\(missing on disk\)/,
     );
     // Existing projects must NOT carry the missing marker.
     expect(out).not.toMatch(new RegExp(`alpha.*${escapeRe(projectA)}\\s*\\(missing`));
@@ -82,6 +84,63 @@ describe("vsync list", () => {
     await makeHome();
     const out = await runList();
     expect(out).toContain("No known projects — run `vsync init` inside a project directory first.");
+  });
+
+  it("hints at push when backends are configured but hold no projects", async () => {
+    await makeHome();
+    const remoteDir = await mkdtemp(join(tmpdir(), "vsync-list-remote-empty-"));
+    await writeRegistry([]);
+    const config = await readGlobalConfig(homeDir);
+    config.profiles["local-fs"] = { backend: "local-fs", settings: { basePath: remoteDir } };
+    await writeGlobalConfig(config, homeDir);
+    await rm(remoteDir, { recursive: true, force: true });
+
+    const out = await runList();
+
+    expect(out).toContain("No projects on your backends yet");
+  });
+
+  it("lists remote-only projects a fresh machine has never linked — with a link hint", async () => {
+    await makeHome();
+    // Machine B scenario: no registry entries, but the backend holds files.
+    const remoteDir = await mkdtemp(join(tmpdir(), "vsync-list-remote-"));
+    projectA = remoteDir; // cleaned up in afterEach
+    await mkdir(join(remoteDir, "OPTOLINK"), { recursive: true });
+    await writeFile(join(remoteDir, "OPTOLINK", ".env"), "A=1");
+    await writeFile(join(remoteDir, "OPTOLINK", "CLAUDE.md"), "notes");
+    const stray = join(remoteDir, "README.md"); // root-level file: not a project
+    await writeFile(stray, "not a project");
+    await writeRegistry([]);
+    const config = await readGlobalConfig(homeDir);
+    config.profiles["local-fs"] = { backend: "local-fs", settings: { basePath: remoteDir } };
+    await writeGlobalConfig(config, homeDir);
+
+    const out = await runList();
+
+    expect(out).toContain("Known projects (1):");
+    expect(out).toMatch(/OPTOLINK\s+local-fs\s+2 files\s+not linked here — run `vsync link OPTOLINK`/);
+    expect(out).not.toContain("never synced");
+  });
+
+  it("warns about unreachable backend profiles without failing the listing", async () => {
+    await makeHome();
+    projectA = await mkdtemp(join(tmpdir(), "vsync-list-a2-"));
+    const broken = await mkdtemp(join(tmpdir(), "vsync-list-remote-gone-"));
+    await mkdir(join(broken, "ghosted"), { recursive: true });
+    await writeFile(join(broken, "ghosted", ".env"), "A=1");
+    await rm(broken, { recursive: true, force: true }); // basePath now nonexistent
+    await writeRegistry([
+      { projectId: "alpha", path: projectA, backend: "local-fs", lastSyncedAt: "2026-08-15T10:22:00.000Z" },
+    ]);
+    const config = await readGlobalConfig(homeDir);
+    config.profiles["local-fs"] = { backend: "local-fs", settings: { basePath: broken } };
+    await writeGlobalConfig(config, homeDir);
+
+    const out = await runList();
+
+    // Registry rows still print even when the listing fails; no file count.
+    expect(out).toMatch(/alpha\s+local-fs\s+—\s+2026-08-15 10:22\s+/);
+    expect(out).not.toContain("1 file");
   });
 
   it("creates the global config on demand for an empty home (no pre-existing file)", async () => {
@@ -97,7 +156,9 @@ describe("vsync list", () => {
     await writeFile(oddPath, "x");
     await writeRegistry([{ projectId: "odd", path: oddPath, backend: "sftp" }]);
     const out = await runList();
-    expect(out).toMatch(new RegExp(`odd\\s+sftp\\s+never synced\\s+${escapeRe(oddPath)}$`, "m"));
+    expect(out).toMatch(
+      new RegExp(`odd\\s+sftp\\s+—\\s+never synced\\s+${escapeRe(oddPath)}$`, "m"),
+    );
     expect(out).not.toContain("(missing on disk)");
   });
 
@@ -116,6 +177,28 @@ describe("vsync list", () => {
     const out = await runList();
     expect(out).toContain("cli-check");
     expect(out).toContain("2026-08-16 09:00");
+  });
+
+  it("deduplicates: a project both linked locally and present on the backend is one row", async () => {
+    await makeHome();
+    const remoteDir = await mkdtemp(join(tmpdir(), "vsync-list-remote-dup-"));
+    projectA = await mkdtemp(join(tmpdir(), "vsync-list-dup-"));
+    await mkdir(join(remoteDir, "alpha"), { recursive: true });
+    await writeFile(join(remoteDir, "alpha", ".env"), "A=1");
+    await writeRegistry([
+      { projectId: "alpha", path: projectA, backend: "local-fs", lastSyncedAt: "2026-08-16T09:00:00.000Z" },
+    ]);
+    const config = await readGlobalConfig(homeDir);
+    config.profiles["local-fs"] = { backend: "local-fs", settings: { basePath: remoteDir } };
+    await writeGlobalConfig(config, homeDir);
+
+    const out = await runList();
+
+    expect(out).toContain("Known projects (1):");
+    expect(out).toMatch(
+      new RegExp(`alpha\\s+local-fs\\s+1 file\\s+2026-08-16 09:00\\s+${escapeRe(projectA)}$`, "m"),
+    );
+    expect(out).not.toContain("not linked here");
   });
 });
 

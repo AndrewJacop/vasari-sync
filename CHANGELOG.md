@@ -13,11 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Nested git repos are scanned under the umbrella project.** When the
   parent repo ignores a directory that is itself a git repo (the common
-  `umbrella repo +`/sub-repo/` gitignore pattern), `vsync init` now
-  recurses into it: the sub-repo's own `.gitignore`decides what counts as
-  a candidate, paths stay project-root-relative (`sub-repo/.env`), and
-  the tree picker tags those folders as nested repos. Previously git's
-  collapsed`!! dir/` entry surfaced as one fake file.
+  "umbrella repo ignores `/sub-repo/`" pattern), `vsync init` now
+  recurses into it: the sub-repo's own `.gitignore` decides what counts
+  as a candidate, paths stay project-root-relative (`sub-repo/.env`),
+  and the tree picker tags those folders as nested repos. Previously
+  git's collapsed `!! dir/` entry surfaced as one fake file.
 - **Tree-mode file picker in `vsync init`.** The flat checklist is now a
   collapsible folder tree: `space` toggles a file or selects/drops a
   whole folder (`[ ]`/`[~]`/`[x]` states), `→`/`←` expand/collapse,
@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vsync push`/`vsync pull` show a transfer spinner naming the file in
   flight, so long uploads (database dumps) visibly aren't stuck. Piped/
   CI output falls back to one plain `Uploading x…` line per file.
+- `vsync update` — self-update: checks npm for a newer release, confirms,
+  and installs it (`--yes` skips the prompt). A registry outage is an
+  actionable error, never a silent no-op.
+- **`vsync list` reads your backends, not just this machine's registry.**
+  Projects are discovered by listing every configured backend profile and
+  grouping by `<projectId>/` prefix, so a fresh machine sees every project
+  ever pushed before linking anything (with a `vsync link <id>` hint).
+  Local registry entries still enrich rows with checkout path and last
+  sync time; a `—` file count marks projects not currently on any
+  backend. Unreachable profiles are warned about and skipped.
 
 ### Changed
 

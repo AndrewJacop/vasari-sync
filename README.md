@@ -120,10 +120,10 @@ several projects can share one bucket/server without colliding.
 
 ## What lives where
 
-| Path                             | Contents                                                        | Committed to git?                              |
-| -------------------------------- | --------------------------------------------------------------- | ---------------------------------------------- |
-| `.vsync/manifest.json` (project) | backend name, tracked paths, content hashes, last-synced times  | **no** — git-ignored, rebuilt via `vsync link` |
-| `~/.vsync/config.json` (machine) | backend profiles, credentials (0600), registry for `vsync list` | no                                             |
+| Path                             | Contents                                                                                       | Committed to git?                              |
+| -------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `.vsync/manifest.json` (project) | backend name, tracked paths, content hashes, last-synced times                                 | **no** — git-ignored, rebuilt via `vsync link` |
+| `~/.vsync/config.json` (machine) | backend profiles, credentials (0600), local project registry (checkout paths for `vsync list`) | no                                             |
 
 ## Which files does `init` suggest?
 

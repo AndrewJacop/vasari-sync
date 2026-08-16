@@ -13,6 +13,7 @@ import { runStatusCommand } from "./commands/status.js";
 import { runPushCommand } from "./commands/push.js";
 import { runPullCommand } from "./commands/pull.js";
 import { runListCommand } from "./commands/list.js";
+import { runUpdateCommand } from "./commands/update.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -141,10 +142,23 @@ program
 
 program
   .command("list")
-  .description("Show all known projects (from the global registry)")
+  .description("Show all known projects (on your backends and linked on this machine)")
   .action(async () => {
     try {
       await runListCommand();
+    } catch (err) {
+      console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("update")
+  .description("Update vasari-sync to the latest version from npm")
+  .option("-y, --yes", "install the new version without asking")
+  .action(async (options: { yes?: boolean }) => {
+    try {
+      await runUpdateCommand(options.yes === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
