@@ -8,6 +8,7 @@ import { readManifest, writeManifest, type ManifestFileEntry } from "../core/man
 import { readProjectConfig, writeProjectConfig } from "../core/projectConfig.js";
 import { availableBackends, createBackend } from "../storage/registry.js";
 import type { BackendConfig } from "../storage/types.js";
+import { validateProjectId } from "../utils/paths.js";
 
 /**
  * `vsync init` — first-time setup in a project: pick a project ID and
@@ -41,13 +42,13 @@ export async function runInitCommand(projectRoot: string, homeDir?: string): Pro
     message: "Project ID",
     default: basename(projectRoot),
     validate: (v: string) => {
-      const trimmed = v.trim();
-      if (!trimmed) return "Project ID is required";
+      const idCheck = validateProjectId(v);
+      if (idCheck !== true) return idCheck;
       const clash = globalConfig.projects.find(
-        (p) => p.projectId === trimmed && p.path !== projectRoot,
+        (p) => p.projectId === v.trim() && p.path !== projectRoot,
       );
       if (clash)
-        return `'${trimmed}' is already registered for another project (${clash.path}) — pick a unique ID`;
+        return `'${v.trim()}' is already registered for another project (${clash.path}) — pick a unique ID`;
       return true;
     },
   });
