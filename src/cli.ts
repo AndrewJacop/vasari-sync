@@ -11,6 +11,7 @@ import { runDiffCommand } from "./commands/diff.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runPushCommand } from "./commands/push.js";
 import { runPullCommand } from "./commands/pull.js";
+import { runListCommand } from "./commands/list.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -131,6 +132,18 @@ program
   .action(async (options: { force?: boolean }) => {
     try {
       await runPullCommand(process.cwd(), options.force === true);
+    } catch (err) {
+      console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("list")
+  .description("Show all known projects (from the global registry)")
+  .action(async () => {
+    try {
+      await runListCommand();
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
