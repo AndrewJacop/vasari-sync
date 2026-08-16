@@ -26,8 +26,9 @@ const h = vi.hoisted(() => {
     branches: new Set<string>(["main", "vsync"]),
     repoStatus: null as number | null, // 404/401 to fail repos.get
     repoError: null as Error | null, // transport failure for repos.get
+    repoSize: 100, // KB; 0 = empty repo (default branch may not exist yet)
     commits: [] as Array<{ message: string; branch?: string; path: string }>,
-    clients: [] as Array<{ auth: string; userAgent: string }>,
+    clients: [] as Array<{ auth: string; userAgent: string; log: Record<string, unknown> }>,
   };
   const err = (message: string, code: number) =>
     Object.assign(new Error(message), { status: code });
@@ -111,7 +112,9 @@ const h = vi.hoisted(() => {
         if (state.repoError) throw state.repoError;
         if (state.repoStatus !== null)
           throw err(`repo status ${state.repoStatus}`, state.repoStatus);
-        return { data: { default_branch: "main", full_name: "acme/secrets" } };
+        return {
+          data: { default_branch: "main", full_name: "acme/secrets", size: state.repoSize },
+        };
       },
       async getBranch({ branch }: { branch: string }) {
         if (!state.branches.has(branch)) throw err(`no branch '${branch}'`, 404);
@@ -124,7 +127,7 @@ const h = vi.hoisted(() => {
 
 vi.mock("@octokit/rest", () => ({
   Octokit: class {
-    constructor(options: { auth: string; userAgent: string }) {
+    constructor(options: { auth: string; userAgent: string; log: Record<string, unknown> }) {
       h.state.clients.push(options);
       return new h.FakeOctokit();
     }
@@ -160,6 +163,7 @@ beforeEach(() => {
   h.state.branches.add("vsync");
   h.state.repoStatus = null;
   h.state.repoError = null;
+  h.state.repoSize = 100;
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -180,7 +184,13 @@ describe("github-repo handler config validation", () => {
 describe("github-repo handler (faked Octokit)", () => {
   it("authenticates the Octokit client with the configured token", () => {
     new GithubRepoHandler(CONFIG);
-    expect(h.state.clients).toEqual([{ auth: "ghp_test-token", userAgent: "vasari-sync" }]);
+    expect(h.state.clients).toEqual([
+      { auth: "ghp_test-token", userAgent: "vasari-sync", log: expect.anything() },
+    ]);
+    // The logger must be fully no-op — Octokit's request-log plugin would
+    // otherwise print every expected 404 existence check to the terminal.
+    const { log } = h.state.clients[0];
+    expect(Object.values(log).every((fn) => (fn as () => void)() === undefined)).toBe(true);
   });
 
   it("push commits a new file under the base path on the configured branch", async () => {
@@ -284,6 +294,23 @@ describe("github-repo handler (faked Octokit)", () => {
       ok: true,
       message: `connected to ${OWNER}/${REPO} (branch 'main')`,
     });
+  });
+
+  it("testConnection accepts an empty repo: default branch appears on first push", async () => {
+    h.state.repoSize = 0;
+    h.state.branches.clear(); // no commits yet — GitHub still reports main as default
+    await expect(new GithubRepoHandler(ROOT_CONFIG).testConnection()).resolves.toEqual({
+      ok: true,
+      message: `connected to ${OWNER}/${REPO} (empty repo — first push creates branch 'main')`,
+    });
+  });
+
+  it("testConnection still rejects a missing branch on a non-empty repo", async () => {
+    h.state.repoSize = 100;
+    h.state.branches.clear();
+    const result = await new GithubRepoHandler(ROOT_CONFIG).testConnection();
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/branch 'main' not found/);
   });
 
   it("testConnection reports the configured branch", async () => {

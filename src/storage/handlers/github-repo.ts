@@ -56,7 +56,16 @@ export class GithubRepoHandler implements StorageBackend {
     if (missing.length > 0) {
       throw new Error(`github-repo backend missing required settings: ${missing.join(", ")}`);
     }
-    this.octokit = new Octokit({ auth: config.token, userAgent: "vasari-sync" });
+    // No-op logger silences Octokit's bundled request-log plugin, which
+    // prints every non-2xx line (including the expected 404 existence
+    // checks) to the terminal. Real failures surface via thrown errors /
+    // testConnection instead.
+    const silent = () => undefined;
+    this.octokit = new Octokit({
+      auth: config.token,
+      userAgent: "vasari-sync",
+      log: { debug: silent, info: silent, warn: silent, error: silent },
+    });
   }
 
   /** Remote keys are posix-style; the base path sits under the repo root. */
@@ -193,12 +202,14 @@ export class GithubRepoHandler implements StorageBackend {
 
   async testConnection(): Promise<{ ok: boolean; message?: string }> {
     let defaultBranch: string;
+    let size: number;
     try {
       const res = await this.octokit.repos.get({
         owner: this.config.owner,
         repo: this.config.repo,
       });
       defaultBranch = res.data.default_branch;
+      size = res.data.size;
     } catch (err) {
       // GitHub returns 404 for private repos the token can't see (never
       // 403), so a failure here means repo-or-access, not just repo.
@@ -222,6 +233,16 @@ export class GithubRepoHandler implements StorageBackend {
       });
     } catch (err) {
       if (status(err) === 404) {
+        // Empty repo: GitHub reports a default branch that doesn't exist
+        // until the first commit. The contents API creates it on first
+        // push, so a missing default branch on an empty repo is fine —
+        // only a user-typed branch that 404s is a real problem.
+        if (this.config.branch === undefined && size === 0) {
+          return {
+            ok: true,
+            message: `connected to ${this.config.owner}/${this.config.repo} (empty repo — first push creates branch '${branch}')`,
+          };
+        }
         return {
           ok: false,
           message: `branch '${branch}' not found on ${this.config.owner}/${this.config.repo}`,

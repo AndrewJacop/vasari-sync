@@ -34,8 +34,31 @@ vi.mock("../../src/storage/handlers/s3.js", () => {
   return { S3Handler: FakeS3Handler };
 });
 
-import { confirm } from "@inquirer/prompts";
+vi.mock("../../src/utils/gh.js", () => ({ ghAuth: vi.fn(async () => ({})) }));
+
+vi.mock("../../src/storage/handlers/github-repo.js", () => {
+  class FakeGithubRepoHandler {
+    static lastConfig: unknown;
+    /** Flip to true to make the next testConnection fail (token/scope case). */
+    static failNext = false;
+    constructor(config: unknown) {
+      FakeGithubRepoHandler.lastConfig = config;
+    }
+    async testConnection() {
+      if (FakeGithubRepoHandler.failNext) {
+        FakeGithubRepoHandler.failNext = false;
+        return { ok: false, message: "cannot access octocat/vasari-sync" } as const;
+      }
+      return { ok: true, message: "fake github" } as const;
+    }
+  }
+  return { GithubRepoHandler: FakeGithubRepoHandler };
+});
+
+import { confirm, input } from "@inquirer/prompts";
 import { S3Handler } from "../../src/storage/handlers/s3.js";
+import { GithubRepoHandler } from "../../src/storage/handlers/github-repo.js";
+import { ghAuth } from "../../src/utils/gh.js";
 import { runConfigCommand } from "../../src/commands/config.js";
 import { readGlobalConfig } from "../../src/core/globalConfig.js";
 
@@ -57,6 +80,7 @@ afterEach(async () => {
 });
 
 const FakeS3 = S3Handler as unknown as { lastConfig: unknown };
+const FakeGithubRepo = GithubRepoHandler as unknown as { lastConfig: unknown };
 
 describe("vsync config — interactive local-fs flow (scripted prompts)", () => {
   it("prompts for the backend, tests the connection, and saves the profile", async () => {
@@ -170,6 +194,122 @@ describe("vsync config — secret handling (s3 via mocked handler)", () => {
       accessKeyId: "v1",
       secretAccessKey: "v2",
     });
+  });
+});
+
+describe("vsync config — github-repo with gh CLI (scripted prompts)", () => {
+  it("reuses the gh CLI token and defaults the owner to the gh login", async () => {
+    vi.mocked(ghAuth).mockResolvedValue({
+      token: "ghp_cli",
+      login: "octocat",
+      repo: "octocat/vasari-sync", // cwd repo — must NOT prefill the vault repo
+    });
+    // Scripted answers: the prompt mock does not apply `default`, so every
+    // input gets an explicit answer in BACKEND_FIELDS order (token skipped).
+    script(
+      "github-repo",
+      true, // use gh CLI token?
+      "octocat", // owner
+      "vasari-sync", // repo
+      "", // branch (optional)
+      "", // remoteBasePath (optional)
+    );
+
+    await runConfigCommand({}, home);
+
+    const config = await readGlobalConfig(home);
+    expect(config.profiles["github-repo"]?.settings).toEqual({
+      owner: "octocat",
+      repo: "vasari-sync",
+    });
+    expect(config.secrets["github-repo/token"]).toBe("ghp_cli");
+    // No token prompt was queued, yet the backend still got one.
+    expect(FakeGithubRepo.lastConfig).toEqual({
+      owner: "octocat",
+      repo: "vasari-sync",
+      token: "ghp_cli",
+    });
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Using gh CLI token"));
+    // gh prefill: owner carries the login default; the vault repo gets NO
+    // cwd-repo default (it must be a deliberate choice).
+    expect(vi.mocked(input)).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Storage repo owner (user or org)", default: "octocat" }),
+    );
+    expect(vi.mocked(input)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message:
+          "Storage repo (private repo vsync commits your files into — just the name, or paste its URL)",
+        default: undefined,
+      }),
+    );
+  });
+
+  it("falls back to the PAT prompt with a tip when no gh login exists", async () => {
+    vi.mocked(ghAuth).mockResolvedValue({});
+    script(
+      "github-repo",
+      "octocat", // owner (no gh default to prefill)
+      "vasari-sync", // repo
+      "", // branch (optional)
+      "ghp_manual", // token — PAT prompt still fires
+      "", // remoteBasePath (optional)
+    );
+
+    await runConfigCommand({}, home);
+
+    const config = await readGlobalConfig(home);
+    expect(config.secrets["github-repo/token"]).toBe("ghp_manual");
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("No gh CLI login found"));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("gh auth login"));
+  });
+
+  it("suggests a scope fix when the gh CLI token fails the connection test", async () => {
+    vi.mocked(ghAuth).mockResolvedValue({ token: "ghp_cli", login: "octocat" });
+    // The backend rejects the token (e.g. missing repo scope).
+    (GithubRepoHandler as unknown as { failNext: boolean }).failNext = true;
+    script(
+      "github-repo",
+      true, // use gh CLI token?
+      "octocat", // owner
+      "vasari-sync", // repo
+      "", // branch
+      "", // remoteBasePath
+      false, // save anyway? — no
+    );
+
+    await runConfigCommand({}, home);
+
+    // The failure confirm carries the gh-specific scope hint.
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("check scopes with `gh auth status`"),
+      }),
+    );
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Aborted"));
+  });
+
+  it("parses a pasted SSH/HTTPS repo URL into owner + repo", async () => {
+    vi.mocked(ghAuth).mockResolvedValue({ token: "ghp_cli", login: "octocat" });
+    script(
+      "github-repo",
+      true, // use gh CLI token?
+      "octocat", // owner
+      "git@github.com:AndrewJacop/temp.git", // repo — pasted URL
+      "", // branch
+      "", // remoteBasePath
+    );
+
+    await runConfigCommand({}, home);
+
+    const config = await readGlobalConfig(home);
+    // URL owner wins over the typed owner — it's the deliberate form.
+    expect(config.profiles["github-repo"]?.settings).toEqual({
+      owner: "AndrewJacop",
+      repo: "temp",
+    });
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("Parsed storage repo: AndrewJacop/temp"),
+    );
   });
 });
 
