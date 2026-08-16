@@ -128,11 +128,26 @@ git repository). Interactive. Steps:
    no profile exists yet).
 3. **Connection test** — as in `config`; you may continue despite a
    failure.
-4. **File selection** — a checklist of everything git ignores, minus
-   suppressed entries (`node_modules/`, `dist/`, other build/cache dirs,
-   files > 10 MB). Files matching `.env*`, `*secret*`, `*credential*`,
-   `*.pem`, `*.key`, `id_rsa*`, `config.local.*` (each ≤ 50 KB) are
-   sorted to the top and **pre-checked**. Toggle anything, then confirm.
+4. **File selection** — a **folder-tree checklist** of everything git
+   ignores, minus suppressed entries (`node_modules/`, `dist/`, other
+   build/cache dirs, files > 10 MB). Files matching `.env*`, `*secret*`,
+   `*credential*`, `*.pem`, `*.key`, `id_rsa*`, `config.local.*` (each
+   ≤ 50 KB) are tagged `suggested` and **pre-checked**.
+
+   | Key     | Action                                                       |
+   | ------- | ------------------------------------------------------------ |
+   | `↑`/`↓` | move (wraps around)                                          |
+   | `space` | toggle a file; on a folder, select its whole subtree — or clear it when fully selected (`[ ]` none / `[~]` some / `[x]` all) |
+   | `→`/`←` | expand / collapse a folder (all start collapsed)             |
+   | `a`/`n` | select all / none                                            |
+   | `enter` | confirm                                                      |
+
+   **Nested git repos:** directories the parent repo ignores that are
+   themselves git repos (the umbrella pattern — parent `.gitignore` has
+   `/sub-repo/`) are scanned recursively: the sub-repo's own
+   `.gitignore` decides its candidates, files appear under their
+   project-relative paths (`sub-repo/.env`), and those folders are
+   tagged `nested repo`. A sub-repo's _tracked_ files are never offered.
 
 On confirm: writes `.vsync/manifest.json` (backend name + tracked-file
 ledger) and registers the project in `~/.vsync/config.json` (what
@@ -143,16 +158,19 @@ Re-running `init` on an initialized project warns first (re-initializing
 replaces the tracked-file list; deselected files are untracked, never
 deleted) and asks for confirmation.
 
-### Examples
+### Example
 
 ```console
 $ vsync init
 ? Project ID my-project
 ? Which storage backend for this project? s3 (saved profile)
 Connection OK (s3).
-? Files to track (suggested files are pre-checked) .env, .env.local, local-notes.txt
+? Files to track — 3 selected
+    ▸ [~] optolink-backend   nested repo · 4 files
+    ▸ [x] optolink-portal    nested repo · 2 files
+      [ ] local-notes.txt   16 B
 Initialized 'my-project' (backend: s3).
-Tracking 2 file(s): .env, .env.local. Nothing has been uploaded yet — run `vsync push`.
+Tracking 3 file(s): optolink-backend/.env, optolink-backend/.env.test, optolink-portal/.env. Nothing has been uploaded yet — run `vsync push`.
 ```
 
 A project with no ignored files skips the checklist:
@@ -340,6 +358,11 @@ others):
 If anything was refused or failed, the command exits `1` with a summary
 (`[vsync] Push incomplete — …`) even though the successful uploads stand.
 
+While transfers run, a spinner names the file in flight
+(`⠋ Uploading dump.sql (330 KB)`) so long uploads visibly aren't stuck;
+non-interactive output (pipes, CI) prints one plain `Uploading x…` line
+per file instead.
+
 ### Flags
 
 | Flag          | Effect                                                                                                                                                                                 |
@@ -375,7 +398,8 @@ Mirror of `push`, opposite direction. Per-file outcomes:
 
 A fresh `git clone` (which carries `.vsync/` but none of the secret
 files) shows every tracked file as _missing locally_ — one `vsync pull`
-restores them all.
+restores them all. Transfers show the same spinner as `push`
+(`⠋ Downloading x…`).
 
 Same exit-code behavior as `push`: refused/failed files → exit `1`, with
 successful downloads still applied and recorded.

@@ -1,11 +1,11 @@
-import process from "node:process";
+import { stderr } from "node:process";
 import { describe, expect, it, vi } from "vitest";
 import { Spinner } from "../../../src/utils/progress.js";
 
 describe("Spinner (non-TTY fallback)", () => {
   it("prints one plain line per new message, keeps frames off stdout", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const write = vi.spyOn(stderr, "write").mockImplementation(() => true);
 
     const sp = new Spinner(false);
     sp.start("Uploading .env");
@@ -27,7 +27,7 @@ describe("Spinner (TTY animation)", () => {
   it("animates frames on stderr and clears the line on stop", async () => {
     vi.useFakeTimers();
     const chunks: string[] = [];
-    const write = vi.spyOn(process.stderr, "write").mockImplementation((c) => {
+    const write = vi.spyOn(stderr, "write").mockImplementation((c) => {
       chunks.push(String(c));
       return true;
     });

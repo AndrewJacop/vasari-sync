@@ -39,7 +39,7 @@ exactly as they are on disk. The security model is simple:
 
 ## Requirements
 
-- Node.js ≥ 18
+- Node.js ≥ 22.13
 - `git` on your PATH (file discovery uses real `.gitignore` semantics)
 
 ## Install
@@ -64,8 +64,9 @@ npx vasari-sync --help
 vsync config
 
 # 2. Inside your project (a git repo): pick a project ID and which
-#    git-ignored files to track. Suggested files (.env*, *.pem, id_rsa*,
-#    *secret*, ...) are pre-checked.
+#    git-ignored files to track — a folder tree; suggested files (.env*,
+#    *.pem, id_rsa*, *secret*, ...) are pre-checked, folders select whole
+#    subtrees. Nested git repos ignored by the parent are scanned too.
 vsync init
 
 # 3. Upload the tracked files.
@@ -135,6 +136,22 @@ excludesfile semantics — via `git status --ignored`) and classifies:
 - **Never shown:** anything inside `node_modules/`, `dist/`, `build/`,
   `.next/`, `target/`, `vendor/`, `__pycache__/`, cache/log dirs, or over
   10 MB.
+
+Selection happens in a **folder-tree checklist**: folders show
+`[ ]`/`[~]`/`[x]` (none/some/all selected) and toggling one selects or
+clears its whole subtree; `→`/`←` expand/collapse, `a`/`n` select
+all/none.
+
+### Nested git repos
+
+Projects sometimes contain **other git repos** ignored by the parent
+(the umbrella-repo pattern: parent `.gitignore` has `/some-subrepo/`).
+`init` scans those too — the sub-repo's own `.gitignore` decides what
+counts as a candidate, so a `.env` ignored inside it is offered under its
+project-relative path (`some-subrepo/.env`) while the sub-repo's tracked
+files never are. In the tree picker those folders are tagged
+`nested repo`. This is exactly how you sync `.env`/`CLAUDE.md` files from
+checked-out sub-repos under one umbrella project.
 
 ## Development
 

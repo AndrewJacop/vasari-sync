@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-16
+
+### Added
+
+- **Nested git repos are scanned under the umbrella project.** When the
+  parent repo ignores a directory that is itself a git repo (the common
+  `umbrella repo +`/sub-repo/` gitignore pattern), `vsync init` now
+  recurses into it: the sub-repo's own `.gitignore`decides what counts as
+  a candidate, paths stay project-root-relative (`sub-repo/.env`), and
+  the tree picker tags those folders as nested repos. Previously git's
+  collapsed`!! dir/` entry surfaced as one fake file.
+- **Tree-mode file picker in `vsync init`.** The flat checklist is now a
+  collapsible folder tree: `space` toggles a file or selects/drops a
+  whole folder (`[ ]`/`[~]`/`[x]` states), `→`/`←` expand/collapse,
+  `a`/`n` select all/none. Suggested files stay pre-checked.
+- `vsync push`/`vsync pull` show a transfer spinner naming the file in
+  flight, so long uploads (database dumps) visibly aren't stuck. Piped/
+  CI output falls back to one plain `Uploading x…` line per file.
+
+### Changed
+
+- `git` requirement for `init`'s scan: sub-repo candidates use each
+  sub-repo's own ignore semantics; files tracked inside a sub-repo are
+  never candidates (unchanged, now applies recursively too).
+
 ## [0.2.0] - 2026-08-16
 
 Cross-device sync rebuilt around one principle: **the manifest never
