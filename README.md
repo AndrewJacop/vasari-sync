@@ -153,6 +153,12 @@ files never are. In the tree picker those folders are tagged
 `nested repo`. This is exactly how you sync `.env`/`CLAUDE.md` files from
 checked-out sub-repos under one umbrella project.
 
+## Updating
+
+```sh
+vsync update   # checks npm, confirms, installs — or: npm install -g vasari-sync@latest
+```
+
 ## Development
 
 ```sh

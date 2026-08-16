@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-16
+
+### Added
+
+- `vsync update` — self-update: checks npm for a newer release, confirms,
+  and installs it (`--yes` skips the prompt). A registry outage is an
+  actionable error, never a silent no-op.
+- **`vsync list` reads your backends, not just this machine's registry.**
+  Projects are discovered by listing every configured backend profile and
+  grouping by `<projectId>/` prefix, so a fresh machine sees every project
+  ever pushed before linking anything (with a `vsync link <id>` hint).
+  Local registry entries still enrich rows with checkout path, last-sync
+  time, and a live file count; `—` marks projects not on any backend.
+  Unreachable profiles are warned about and skipped.
+- **Spinners on every slow remote step** — backend listings (the shared
+  slow call in `status`/`diff`/`push`/`pull`/`link`/`list`), connection
+  tests in `config`/`init`, per-file remote fetches in `diff
+  --show-values`, and `update`'s npm calls, in addition to push/pull
+  transfers. Non-interactive output stays clean plain lines.
+
 ## [0.3.0] - 2026-08-16
 
 ### Added
@@ -25,16 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vsync push`/`vsync pull` show a transfer spinner naming the file in
   flight, so long uploads (database dumps) visibly aren't stuck. Piped/
   CI output falls back to one plain `Uploading x…` line per file.
-- `vsync update` — self-update: checks npm for a newer release, confirms,
-  and installs it (`--yes` skips the prompt). A registry outage is an
-  actionable error, never a silent no-op.
-- **`vsync list` reads your backends, not just this machine's registry.**
-  Projects are discovered by listing every configured backend profile and
-  grouping by `<projectId>/` prefix, so a fresh machine sees every project
-  ever pushed before linking anything (with a `vsync link <id>` hint).
-  Local registry entries still enrich rows with checkout path and last
-  sync time; a `—` file count marks projects not currently on any
-  backend. Unreachable profiles are warned about and skipped.
 
 ### Changed
 

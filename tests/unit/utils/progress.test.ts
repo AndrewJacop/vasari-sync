@@ -53,9 +53,9 @@ describe("withSpinner", () => {
     const lines: string[] = [];
     vi.spyOn(console, "log").mockImplementation((m) => lines.push(String(m)));
 
-    await expect(
-      withSpinner("Working", () => Promise.reject(new Error("boom"))),
-    ).rejects.toThrow("boom");
+    await expect(withSpinner("Working", () => Promise.reject(new Error("boom")))).rejects.toThrow(
+      "boom",
+    );
 
     expect(lines.join("\n")).toContain("Working"); // progress line still printed
     vi.restoreAllMocks();
