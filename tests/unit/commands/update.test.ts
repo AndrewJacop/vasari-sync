@@ -85,4 +85,33 @@ describe("vsync update", () => {
 
     await expect(runUpdateCommand()).rejects.toThrow("could not reach the npm registry");
   });
+
+  it("--json emits {current, latest, updated:false} when already current", async () => {
+    state.viewVersion = `${runningVersion()}\n`;
+
+    await runUpdateCommand(false, true);
+
+    const raw = logs.find((l) => l.trim().startsWith("{"));
+    expect(raw).toBeDefined();
+    expect(JSON.parse(raw as string)).toEqual({
+      current: runningVersion(),
+      latest: runningVersion(),
+      updated: false,
+    });
+  });
+
+  it("--json -y emits {current, latest, updated:true} after installing", async () => {
+    await runUpdateCommand(true, true);
+
+    const raw = logs.find((l) => l.trim().startsWith("{"));
+    expect(raw).toBeDefined();
+    const parsed = JSON.parse(raw as string) as {
+      current: string;
+      latest: string;
+      updated: boolean;
+    };
+    expect(parsed.latest).toBe("9.9.9");
+    expect(parsed.updated).toBe(true);
+    expect(parsed.current).not.toBe(parsed.latest);
+  });
 });

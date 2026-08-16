@@ -85,13 +85,13 @@ async function writeGlobalProfile(): Promise<void> {
 }
 
 /** Drives status and returns everything it printed, joined. */
-async function runStatus(): Promise<string> {
+async function runStatus(json = false): Promise<string> {
   logs.push([]);
   const lines = logs[logs.length - 1];
   vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
     lines.push(args.map(String).join(" "));
   });
-  await runStatusCommand(projectRoot!, homeDir);
+  await runStatusCommand(projectRoot!, homeDir, json);
   return lines.join("\n");
 }
 
@@ -171,5 +171,39 @@ describe("vsync status", () => {
     } finally {
       await rm(bare, { recursive: true, force: true });
     }
+  });
+});
+
+describe("vsync status --json", () => {
+  it("emits per-file statuses as one JSON object on stdout", async () => {
+    const tracked = [".env", "local-notes.txt", "steady.txt"];
+    await makeProject("json-mixed", tracked, [...tracked]);
+    await writeFile(join(projectRoot!, "local-notes.txt"), "edited locally\n");
+    await rm(remotePathOf("json-mixed", ".env")); // synced-then-deleted remotely
+
+    const out = await runStatus(true);
+
+    const parsed = JSON.parse(out) as {
+      projectId: string;
+      backend: string;
+      files: { path: string; status: string; note?: string }[];
+    };
+    expect(parsed.projectId).toBe("json-mixed");
+    expect(parsed.backend).toBe("local-fs");
+    expect(parsed.files).toEqual(
+      expect.arrayContaining([
+        { path: ".env", status: "remote-missing" },
+        { path: "local-notes.txt", status: "local-modified" },
+        { path: "steady.txt", status: "unchanged" },
+      ]),
+    );
+    // One JSON object, nothing else on stdout.
+    expect(out.trim().startsWith("{")).toBe(true);
+  });
+
+  it("notes never-pushed files inside their JSON entry", async () => {
+    await makeProject("json-unsynced", ["local-notes.txt"]);
+    const parsed = JSON.parse(await runStatus(true)) as { files: { note?: string }[] };
+    expect(parsed.files[0].note).toBe("not pushed yet");
   });
 });

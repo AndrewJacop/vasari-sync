@@ -25,6 +25,11 @@ import { remoteKeyFor } from "../utils/paths.js";
  * manifest accurate for every file that did upload. The manifest is
  * mutated in place (the state entries reference it) and written once at
  * the end, only if anything changed.
+ *
+ * Output modes: "prose" (default), "json" (one result object on stdout —
+ * printed even when the run is incomplete, BEFORE the error, so agents
+ * get per-file detail plus exit 1), "silent" (results returned for
+ * composition, nothing printed — link uses this).
  */
 
 type PushOutcome =
@@ -51,17 +56,29 @@ const OUTCOME_SUMMARY: Record<PushOutcome, string> = {
   failed: "failed",
 };
 
-interface PushResult {
+interface PushResultFile {
   path: string;
   outcome: PushOutcome;
   note?: string;
 }
 
+/** What `vsync push` reports (prose, --json, and link composition). */
+export interface PushResult {
+  projectId: string;
+  backend: string;
+  files: PushResultFile[];
+  summary: Partial<Record<PushOutcome, number>>;
+}
+
+/** Where push/pull results go: prose lines, one JSON object, or nothing. */
+export type OutputMode = "prose" | "json" | "silent";
+
 export async function runPushCommand(
   projectRoot: string,
   force: boolean,
   homeDir?: string,
-): Promise<void> {
+  output: OutputMode = "prose",
+): Promise<PushResult> {
   const manifest = await readManifest(projectRoot);
   if (!manifest) {
     throw new Error("No .vsync/manifest.json found — run `vsync init` in this project first.");
@@ -74,12 +91,27 @@ export async function runPushCommand(
   );
   const states = await computeFileSyncStates(projectRoot, manifest, remoteByKey);
 
-  console.log(
-    `Project '${manifest.projectId}' (backend: ${manifest.backend}) — ${manifest.files.length} tracked file(s)`,
-  );
+  const emptyResult: PushResult = {
+    projectId: manifest.projectId,
+    backend: manifest.backend,
+    files: [],
+    summary: {},
+  };
   if (manifest.files.length === 0) {
-    console.log("No tracked files yet — use `vsync add <path>` or re-run `vsync init`.");
-    return;
+    if (output === "prose") {
+      console.log(
+        `Project '${manifest.projectId}' (backend: ${manifest.backend}) — 0 tracked file(s)`,
+      );
+      console.log("No tracked files yet — use `vsync add <path>` or re-run `vsync init`.");
+    } else if (output === "json") {
+      console.log(JSON.stringify(emptyResult, null, 2));
+    }
+    return emptyResult;
+  }
+  if (output === "prose") {
+    console.log(
+      `Project '${manifest.projectId}' (backend: ${manifest.backend}) — ${manifest.files.length} tracked file(s)`,
+    );
   }
 
   // Loud, up-front warning about what --force destroys — before any upload.
@@ -95,7 +127,7 @@ export async function runPushCommand(
     );
   }
 
-  const results: PushResult[] = [];
+  const results: PushResultFile[] = [];
   const syncedAt = new Date().toISOString();
   const spinner = new Spinner();
   let dirty = false;
@@ -148,26 +180,39 @@ export async function runPushCommand(
     await writeManifest(projectRoot, manifest);
   }
 
-  for (const r of results) {
-    console.log(`  ${r.path} — ${OUTCOME_LABEL[r.outcome]}${r.note ? ` (${r.note})` : ""}`);
-  }
   const counts = new Map<PushOutcome, number>();
   for (const r of results) counts.set(r.outcome, (counts.get(r.outcome) ?? 0) + 1);
-  // Fixed order so the summary doesn't shuffle with file sort order.
-  const SUMMARY_ORDER: PushOutcome[] = [
-    "pushed",
-    "skipped-unchanged",
-    "conflicted",
-    "needs-pull",
-    "missing-locally",
-    "failed",
-  ];
-  const summary: string[] = [];
-  for (const outcome of SUMMARY_ORDER) {
-    const n = counts.get(outcome);
-    if (n) summary.push(`${n} ${OUTCOME_SUMMARY[outcome]}`);
+  const result: PushResult = {
+    projectId: manifest.projectId,
+    backend: manifest.backend,
+    files: results,
+    summary: Object.fromEntries(counts) as Partial<Record<PushOutcome, number>>,
+  };
+
+  if (output === "prose") {
+    for (const r of results) {
+      console.log(`  ${r.path} — ${OUTCOME_LABEL[r.outcome]}${r.note ? ` (${r.note})` : ""}`);
+    }
+    // Fixed order so the summary doesn't shuffle with file sort order.
+    const SUMMARY_ORDER: PushOutcome[] = [
+      "pushed",
+      "skipped-unchanged",
+      "conflicted",
+      "needs-pull",
+      "missing-locally",
+      "failed",
+    ];
+    const summary: string[] = [];
+    for (const outcome of SUMMARY_ORDER) {
+      const n = counts.get(outcome);
+      if (n) summary.push(`${n} ${OUTCOME_SUMMARY[outcome]}`);
+    }
+    console.log(`Summary: ${summary.join(", ")}`);
+  } else if (output === "json") {
+    // Printed BEFORE the incomplete error below: agents get the per-file
+    // detail on stdout plus exit 1 + stderr error.
+    console.log(JSON.stringify(result, null, 2));
   }
-  console.log(`Summary: ${summary.join(", ")}`);
 
   // Stamp the global registry's lastSyncedAt (what `vsync list` shows) —
   // only when something actually uploaded.
@@ -194,4 +239,5 @@ export async function runPushCommand(
       `Push incomplete — ${reasons.join("; ")}. ` + `The manifest records only successful uploads.`,
     );
   }
+  return result;
 }

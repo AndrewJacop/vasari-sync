@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { resolveBackend } from "../core/backendResolver.js";
-import { scanCandidates } from "../core/candidateScanner.js";
+import { scanCandidates, type Candidate } from "../core/candidateScanner.js";
 import { readManifest, type Manifest } from "../core/manifest.js";
 import { computeFileSyncStates, STATUS_SECTIONS } from "../core/syncState.js";
 import { remoteKeyFor } from "../utils/paths.js";
@@ -15,12 +15,16 @@ import { withSpinner } from "../utils/progress.js";
  * opts into real content diffs: each differing tracked file is pulled to a
  * temp location and line-diffed against the local copy. Never on by
  * default — this is the one command that can print secret values.
+ *
+ * `--json` emits `{projectId, backend, files: [{path, status}], candidates,
+ * patches?}` — `patches` (only with --show-values) carries the same
+ * unified diffs the prose mode prints, one string per file.
  */
-
 export async function runDiffCommand(
   projectRoot: string,
   showValues: boolean,
   homeDir?: string,
+  json = false,
 ): Promise<void> {
   const manifest = await readManifest(projectRoot);
   if (!manifest) {
@@ -34,6 +38,35 @@ export async function runDiffCommand(
   const states = await computeFileSyncStates(projectRoot, manifest, remoteByKey);
 
   const differing = states.filter((s) => s.status !== "unchanged");
+  const candidates = await untrackedCandidates(projectRoot, manifest);
+
+  if (json) {
+    const patches = showValues
+      ? (await collectPatches(projectRoot, manifest.projectId, differing, backend))
+          .filter((r) => r.patch !== undefined)
+          .map((r) => ({ path: r.path, patch: r.patch as string }))
+      : undefined;
+    console.log(
+      JSON.stringify(
+        {
+          projectId: manifest.projectId,
+          backend: manifest.backend,
+          files: differing.map(({ entry, status }) => ({ path: entry.path, status })),
+          candidates: candidates.map((c) => ({
+            path: c.path,
+            size: c.size,
+            classification: c.classification,
+            ...(c.rule ? { rule: c.rule } : {}),
+          })),
+          ...(patches !== undefined ? { patches } : {}),
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
   for (const section of STATUS_SECTIONS) {
     if (section.status === "unchanged") continue; // diff lists differences only
     const items = differing.filter((s) => s.status === section.status);
@@ -44,14 +77,22 @@ export async function runDiffCommand(
       console.log(`  ${entry.path}`);
     }
   }
-  const differCount = states.filter((s) => s.status !== "unchanged").length;
   console.log(
     `${manifest.files.length} tracked file(s), ` +
-      (differCount > 0 ? `${differCount} differ` : "none differ"),
+      (differing.length > 0 ? `${differing.length} differ` : "none differ"),
   );
 
   await showContentDiffs(projectRoot, manifest.projectId, differing, showValues, backend);
-  await showUntrackedCandidates(projectRoot, manifest);
+  console.log("");
+  if (candidates.length === 0) {
+    console.log("Untracked candidates (same scan as `vsync init`): none");
+    return;
+  }
+  console.log("Untracked candidates (same scan as `vsync init`):");
+  for (const c of candidates) {
+    const tag = c.classification === "boosted" ? ` — suggested (${c.rule})` : "";
+    console.log(`  ${c.path} (${c.size} bytes)${tag}`);
+  }
 }
 
 /**
@@ -70,18 +111,54 @@ async function showContentDiffs(
   backend: Awaited<ReturnType<typeof resolveBackend>>,
 ): Promise<void> {
   if (!showValues || differing.length === 0) return;
+  const results = await collectPatches(projectRoot, projectId, differing, backend);
+  for (const r of results) {
+    console.log("");
+    console.log(`── ${r.path} (${r.status}) ──`);
+    if (r.patch) console.log(r.patch);
+    else console.log(`  ${r.note ?? "(no diff available)"}`);
+  }
+}
+
+/** Per-file content-diff result: `patch` when both copies were readable,
+ * otherwise a human-readable `note` (never a crash). */
+interface PatchResult {
+  path: string;
+  status: string;
+  patch?: string;
+  note?: string;
+}
+
+/**
+ * Builds one unified-diff string per differing file with both copies
+ * available (shared by prose and `--json` modes). The diff's `-` side is
+ * the last-synced base version, `+` the side that changed since (for a
+ * conflict, where neither side holds the base, `-` is the stored copy
+ * and `+` the local one). Files missing on one side (never pushed,
+ * deleted locally, unreachable remote) get a note instead — same notes
+ * the prose mode always printed.
+ */
+async function collectPatches(
+  projectRoot: string,
+  projectId: string,
+  differing: Awaited<ReturnType<typeof computeFileSyncStates>>,
+  backend: Awaited<ReturnType<typeof resolveBackend>>,
+): Promise<PatchResult[]> {
   const scratch = await mkdtemp(join(tmpdir(), "vsync-diff-"));
   try {
+    const results: PatchResult[] = [];
     for (const { entry, status, remoteFile } of differing) {
-      console.log("");
-      console.log(`── ${entry.path} (${status}) ──`);
       const localText = await readFile(join(projectRoot, entry.path), "utf8").catch(() => null);
       if (localText === null) {
-        console.log("  (no local copy)");
+        results.push({ path: entry.path, status, note: "(no local copy)" });
         continue;
       }
       if (!remoteFile) {
-        console.log("  (no remote copy — never pushed, or deleted on the backend)");
+        results.push({
+          path: entry.path,
+          status,
+          note: "(no remote copy — never pushed, or deleted on the backend)",
+        });
         continue;
       }
       const remoteCopy = join(scratch, entry.path.replace(/\//g, "_"));
@@ -92,12 +169,13 @@ async function showContentDiffs(
         );
         remoteText = await readFile(remoteCopy, "utf8");
       } catch (err) {
-        console.log(
-          `  (no remote copy — ${(err instanceof Error ? err.message : String(err)).trim()})`,
-        );
+        results.push({
+          path: entry.path,
+          status,
+          note: `(no remote copy — ${(err instanceof Error ? err.message : String(err)).trim()})`,
+        });
+        continue;
       }
-      if (remoteText === null) continue;
-
       // The unchanged side still holds the last-synced (base) content —
       // that side becomes the `-` half. A conflict has no base, so the
       // stored copy is treated as the base.
@@ -115,10 +193,9 @@ async function showContentDiffs(
       );
       // Drop only the "=====" separator line — the ---/+++ header lines
       // carry the remote/local labels we want.
-      for (const line of patch.split("\n").slice(1)) {
-        if (line) console.log(line);
-      }
+      results.push({ path: entry.path, status, patch: patch.split("\n").slice(1).join("\n") });
     }
+    return results;
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -128,19 +205,9 @@ async function showContentDiffs(
  * Untracked candidates: ignored files NOT in the manifest, classified by
  * the same scanner init uses. Suppressed items are never listed.
  */
-async function showUntrackedCandidates(projectRoot: string, manifest: Manifest): Promise<void> {
+async function untrackedCandidates(projectRoot: string, manifest: Manifest): Promise<Candidate[]> {
   const manifestPaths = new Set(manifest.files.map((f) => f.path));
-  const candidates = (await scanCandidates(projectRoot)).filter(
+  return (await scanCandidates(projectRoot)).filter(
     (c) => c.classification !== "suppressed" && !manifestPaths.has(c.path),
   );
-  console.log("");
-  if (candidates.length === 0) {
-    console.log("Untracked candidates (same scan as `vsync init`): none");
-    return;
-  }
-  console.log("Untracked candidates (same scan as `vsync init`):");
-  for (const c of candidates) {
-    const tag = c.classification === "boosted" ? ` — suggested (${c.rule})` : "";
-    console.log(`  ${c.path} (${c.size} bytes)${tag}`);
-  }
 }

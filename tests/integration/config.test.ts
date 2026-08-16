@@ -55,11 +55,21 @@ vi.mock("../../src/storage/handlers/github-repo.js", () => {
   return { GithubRepoHandler: FakeGithubRepoHandler };
 });
 
-import { confirm, input } from "@inquirer/prompts";
+vi.mock("../../src/storage/handlers/sftp.js", () => {
+  class FakeSftpHandler {
+    constructor() {}
+    async testConnection() {
+      return { ok: true, message: "fake sftp" } as const;
+    }
+  }
+  return { SftpHandler: FakeSftpHandler };
+});
+
+import { confirm, input, select } from "@inquirer/prompts";
 import { S3Handler } from "../../src/storage/handlers/s3.js";
 import { GithubRepoHandler } from "../../src/storage/handlers/github-repo.js";
 import { ghAuth } from "../../src/utils/gh.js";
-import { runConfigCommand } from "../../src/commands/config.js";
+import { runConfigCommand, toEnvVarName } from "../../src/commands/config.js";
 import { readGlobalConfig } from "../../src/core/globalConfig.js";
 
 function script(...answers: unknown[]): void {
@@ -333,6 +343,28 @@ describe("vsync config --show", () => {
     expect(out).not.toContain("super-secret-value");
     expect(out).not.toContain("AKIAEXAMPLE");
   });
+
+  it("emits JSON with --json: secret field NAMES only, never values", async () => {
+    script("s3", "us-east-1", "my-bucket", "", "AKIAEXAMPLE", "super-secret-value", false);
+    await runConfigCommand({}, home);
+
+    vi.mocked(console.log).mockClear();
+    await runConfigCommand({ show: true, json: true }, home);
+
+    const raw = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .find((l) => l.trim().startsWith("{"));
+    expect(raw).toBeDefined();
+    const parsed = JSON.parse(raw as string) as {
+      defaultBackend: string | null;
+      profiles: Record<string, { backend: string; settings: unknown; secrets: string[] }>;
+    };
+    expect(parsed.defaultBackend).toBe("s3");
+    expect(parsed.profiles.s3.secrets.sort()).toEqual(["accessKeyId", "secretAccessKey"]);
+    expect(JSON.stringify(parsed)).not.toContain("AKIAEXAMPLE");
+    expect(JSON.stringify(parsed)).not.toContain("super-secret-value");
+  });
 });
 
 describe("vsync config --set-default", () => {
@@ -352,4 +384,213 @@ describe("vsync config --set-default", () => {
       /Unknown backend 'nosuch', available:/,
     );
   });
+});
+
+describe("vsync config — non-interactive (flags/env, no prompts)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks(); // isolate "no prompts were called" assertions
+  });
+
+  it("saves a local-fs profile from --set alone and never prompts", async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), "vsync-config-remote-"));
+
+    await runConfigCommand({ backend: "local-fs", set: [`basePath=${storageDir}`] }, home);
+
+    // The prompt mock's queue was empty — any prompt would have hung/errored.
+    expect(select).not.toHaveBeenCalled();
+    expect(input).not.toHaveBeenCalled();
+    const config = await readGlobalConfig(home);
+    expect(config.defaultBackend).toBe("local-fs");
+    expect(config.profiles["local-fs"]).toEqual({
+      backend: "local-fs",
+      settings: { basePath: storageDir },
+    });
+    await rm(storageDir, { recursive: true, force: true });
+  });
+
+  it("requires --backend when no default exists", async () => {
+    await expect(runConfigCommand({ set: ["basePath=/tmp/x"] }, home)).rejects.toThrow(
+      /Non-interactive config: pass --backend/,
+    );
+  });
+
+  it("takes secrets from --secret, keeps them out of profile settings", async () => {
+    await runConfigCommand(
+      {
+        backend: "s3",
+        set: ["region=us-east-1", "bucket=my-bucket", "forcePathStyle=true"],
+        secret: ["accessKeyId=AKIAEXAMPLE", "secretAccessKey=super-secret-value"],
+      },
+      home,
+    );
+
+    const config = await readGlobalConfig(home);
+    expect(config.profiles["s3"]?.settings).toEqual({
+      region: "us-east-1",
+      bucket: "my-bucket",
+      forcePathStyle: true, // boolean kind coerced, not the string "true"
+    });
+    expect(config.secrets["s3/accessKeyId"]).toBe("AKIAEXAMPLE");
+    expect(config.secrets["s3/secretAccessKey"]).toBe("super-secret-value");
+    // Merged config handed to the backend.
+    expect(FakeS3.lastConfig).toEqual({
+      region: "us-east-1",
+      bucket: "my-bucket",
+      forcePathStyle: true,
+      accessKeyId: "AKIAEXAMPLE",
+      secretAccessKey: "super-secret-value",
+    });
+    // argv-secret warning fires.
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("process listings"));
+  });
+
+  it("reads secrets from VSYNC_SECRET_* env vars, --secret wins", async () => {
+    process.env.VSYNC_SECRET_ACCESS_KEY_ID = "from-env";
+    process.env.VSYNC_SECRET_SECRET_ACCESS_KEY = "from-env-too";
+    try {
+      await runConfigCommand(
+        {
+          backend: "s3",
+          set: ["region=us-east-1", "bucket=b"],
+          secret: ["accessKeyId=from-flag"],
+        },
+        home,
+      );
+
+      expect((await configAfter()).secrets["s3/accessKeyId"]).toBe("from-flag");
+      expect((await configAfter()).secrets["s3/secretAccessKey"]).toBe("from-env-too");
+      expect(FakeS3.lastConfig).toMatchObject({
+        accessKeyId: "from-flag",
+        secretAccessKey: "from-env-too",
+      });
+    } finally {
+      delete process.env.VSYNC_SECRET_ACCESS_KEY_ID;
+      delete process.env.VSYNC_SECRET_SECRET_ACCESS_KEY;
+    }
+  });
+
+  it("reports missing required secrets naming both sources", async () => {
+    await expect(
+      runConfigCommand({ backend: "s3", set: ["region=us-east-1", "bucket=b"] }, home),
+    ).rejects.toThrow(
+      /missing required secret\(s\).*--secret accessKeyId=<…> or VSYNC_SECRET_ACCESS_KEY_ID/,
+    );
+  });
+
+  it("auto-routes a secret passed via --set into secret storage", async () => {
+    await runConfigCommand(
+      {
+        backend: "s3",
+        set: ["region=us-east-1", "bucket=b", "accessKeyId=AKIAEXAMPLE"],
+        secret: ["secretAccessKey=super-secret-value"],
+      },
+      home,
+    );
+
+    // Never a plaintext credential in profile settings.
+    expect((await configAfter()).profiles["s3"]?.settings).toEqual({
+      region: "us-east-1",
+      bucket: "b",
+    });
+    expect((await configAfter()).secrets["s3/accessKeyId"]).toBe("AKIAEXAMPLE");
+  });
+
+  it("reuses a gh CLI token when no token is supplied", async () => {
+    vi.mocked(ghAuth).mockResolvedValue({ token: "ghp_cli", login: "octocat" });
+
+    await runConfigCommand(
+      { backend: "github-repo", set: ["owner=octocat", "repo=vasari-sync"] },
+      home,
+    );
+
+    expect((await configAfter()).secrets["github-repo/token"]).toBe("ghp_cli");
+    expect(FakeGithubRepo.lastConfig).toMatchObject({
+      owner: "octocat",
+      repo: "vasari-sync",
+      token: "ghp_cli",
+    });
+  });
+
+  it("parses a pasted repo URL in --set repo", async () => {
+    await runConfigCommand(
+      {
+        backend: "github-repo",
+        set: ["owner=typed", "repo=git@github.com:AndrewJacop/temp.git"],
+        secret: ["token=ghp_x"],
+      },
+      home,
+    );
+
+    // URL owner wins, same as the interactive flow.
+    expect((await configAfter()).profiles["github-repo"]?.settings).toEqual({
+      owner: "AndrewJacop",
+      repo: "temp",
+    });
+  });
+
+  it("aborts on a failed connection test — nothing saved", async () => {
+    (GithubRepoHandler as unknown as { failNext: boolean }).failNext = true;
+    await expect(
+      runConfigCommand(
+        { backend: "github-repo", set: ["owner=o", "repo=r"], secret: ["token=ghp_x"] },
+        home,
+      ),
+    ).rejects.toThrow(/Connection test failed.*nothing saved/s);
+
+    const config = await readGlobalConfig(home);
+    expect(config.profiles).toEqual({});
+  });
+
+  it("rejects malformed key=value pairs", async () => {
+    await expect(runConfigCommand({ backend: "local-fs", set: ["nope"] }, home)).rejects.toThrow(
+      /Malformed --set value 'nope'/,
+    );
+  });
+
+  it("coerces a number-kind field and rejects bad booleans", async () => {
+    await runConfigCommand(
+      {
+        backend: "sftp",
+        set: ["host=h", "port=2222", "username=u", "remoteBasePath=/r"],
+        secret: ["password=p"],
+      },
+      home,
+    );
+    expect((await configAfter()).profiles["sftp"]?.settings.port).toBe(2222);
+
+    await expect(
+      runConfigCommand({ backend: "s3", set: ["forcePathStyle=maybe"] }, home),
+    ).rejects.toThrow(/expects true\/false/);
+  });
+
+  it("emits JSON with --json", async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), "vsync-config-remote-"));
+    await runConfigCommand(
+      { backend: "local-fs", set: [`basePath=${storageDir}`], json: true },
+      home,
+    );
+
+    const raw = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .find((l) => l.trim().startsWith("{"));
+    expect(raw).toBeDefined();
+    expect(JSON.parse(raw as string)).toEqual({
+      backend: "local-fs",
+      saved: true,
+      secretsStored: [],
+    });
+    await rm(storageDir, { recursive: true, force: true });
+  });
+
+  it("maps camelCase secret fields to CONSTANT_CASE env names", () => {
+    expect(toEnvVarName("accessKeyId")).toBe("ACCESS_KEY_ID");
+    expect(toEnvVarName("secretAccessKey")).toBe("SECRET_ACCESS_KEY");
+    expect(toEnvVarName("token")).toBe("TOKEN");
+  });
+
+  /** Reads the global config fresh (post-save assertions). */
+  function configAfter() {
+    return readGlobalConfig(home);
+  }
 });

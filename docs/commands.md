@@ -16,7 +16,16 @@ Conventions used below:
   Windows.
 - Any potentially slow remote step (backend listings, connection tests,
   per-file transfers) shows a spinner naming what's happening; piped/CI
-  output prints one plain progress line per step instead.
+  output prints one plain progress line per step instead (on stderr).
+- **Non-interactive:** every command runs without a TTY. Each prompt has
+  a flag twin — a flag wins, a TTY prompts as before, and headless with
+  no flag you get a safe default or a fast exit `1` naming the missing
+  flag. See [Scripting & agents](#scripting--agents) below.
+- **`--json`:** every command accepts it and prints exactly one
+  machine-readable object on stdout (pretty-printed). Warnings, progress
+  lines, and errors go to stderr; exit codes stay 0/1. On a partial
+  push/pull the result object is printed _before_ the incomplete error,
+  so callers get per-file detail plus exit 1.
 
 Contents: [config](#vsync-config) · [init](#vsync-init) · [add](#vsync-add) ·
 [rm](#vsync-rm) · [status](#vsync-status) · [diff](#vsync-diff) ·
@@ -28,7 +37,8 @@ Contents: [config](#vsync-config) · [init](#vsync-init) · [add](#vsync-add) ·
 ## `vsync config`
 
 One-time-per-machine setup: pick a storage backend, enter its settings and
-credentials, test the connection, save. Interactive.
+credentials, test the connection, save. Interactive by default; fully
+drivable by flags (see below) for agents and CI.
 
 - Non-secret settings are saved to a **profile** in `~/.vsync/config.json`
   (`profiles.<backend>.settings`).
@@ -65,11 +75,36 @@ branch on vsync's first push, so the connection test reports it as OK.
 
 ### Flags
 
-| Flag                      | Effect                                       |
-| ------------------------- | -------------------------------------------- |
-| (none)                    | Interactive setup, as above                  |
-| `--show`                  | Print the saved config with secrets redacted |
-| `--set-default <backend>` | Change the default backend without prompts   |
+| Flag                      | Effect                                                                                              |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
+| (none)                    | Interactive setup, as above                                                                         |
+| `--show`                  | Print the saved config with secrets redacted                                                        |
+| `--set-default <backend>` | Change the default backend without prompts                                                          |
+| `--backend <name>`        | Non-interactive: which backend to configure (validated against the registry)                        |
+| `--set <key=value>`       | Non-interactive: set a non-secret setting (repeatable). Secret fields passed this way auto-route to |
+|                           | secret storage, never the plaintext profile. Values typed by the field's kind (yes/no, number)      |
+| `--secret <key=value>`    | Non-interactive: set a secret (repeatable). Visible in process listings — prefer the env vars below |
+| `--json`                  | Machine-readable output                                                                             |
+
+Passing any of `--backend`/`--set`/`--secret` switches to the
+non-interactive path: no prompts, and a **failed connection test aborts
+without saving** (an agent can't answer "save anyway?" — fix credentials
+and retry). `--backend` falls back to the saved default when omitted.
+
+Secret fields can also arrive via environment variables — constant-case
+field name with a `VSYNC_SECRET_` prefix. Precedence:
+`--secret` > env var > previously saved secret. A `gh` CLI token is
+reused automatically for `github-repo` when no other token is supplied.
+
+| Backend       | Secret env vars                                                |
+| ------------- | -------------------------------------------------------------- |
+| `s3`          | `VSYNC_SECRET_ACCESS_KEY_ID`, `VSYNC_SECRET_SECRET_ACCESS_KEY` |
+| `sftp`        | `VSYNC_SECRET_PASSWORD`                                        |
+| `webdav`      | `VSYNC_SECRET_PASSWORD`                                        |
+| `github-repo` | `VSYNC_SECRET_TOKEN`                                           |
+
+The `repo` field accepts a pasted URL in `--set repo=...` exactly like the
+interactive prompt — the URL's owner wins over a typed `--set owner`.
 
 ### Backend fields (prompt order)
 
@@ -159,7 +194,41 @@ settings/credentials resolve from the global profile at runtime.
 
 Re-running `init` on an initialized project warns first (re-initializing
 replaces the tracked-file list; deselected files are untracked, never
-deleted) and asks for confirmation.
+deleted) and asks for confirmation (or takes `--yes`).
+
+### Flags
+
+| Flag                | Effect                                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `--project-id <id>` | Non-interactive: project ID (headless default: folder name)                                                |
+| `--backend <name>`  | Non-interactive: backend for this project (headless default: the global default backend)                   |
+| `--files <a,b>`     | Non-interactive: project-relative paths to track (repeatable, comma-split; omitted = track nothing). Every |
+|                     | path must exist and be a regular file — validated all-or-nothing. The scorer's rules do NOT filter these — |
+|                     | an explicit path is always honored                                                                         |
+| `--yes`             | Re-initialize despite the existing manifest (headless without it: exit 1, nothing changed)                 |
+| `--list`            | Print the candidate files (same scan as the picker: path, size, `boosted`/`shown` classification) and exit |
+| `--json`            | Machine-readable output                                                                                    |
+
+Headless defaults mirror the interactive ones: project ID ← folder name,
+backend ← global default, files ← none (track later with `vsync add`).
+A failed connection test aborts headless (nothing written) instead of
+offering the continue-anyway confirm.
+
+### Example (non-interactive)
+
+```console
+$ vsync init --project-id my-project --files .env,.env.staging
+Connection OK (s3).
+Initialized 'my-project' (backend: s3).
+Tracking 2 file(s): .env, .env.staging. Nothing has been uploaded yet — run `vsync push`.
+```
+
+```console
+$ vsync init --list
+Candidate files (same scan as `vsync init`):
+  .env (26 bytes) — suggested (pattern:.env*)
+  local-notes.txt (16 bytes)
+```
 
 ### Example
 
@@ -198,6 +267,14 @@ The project ID is whatever `vsync list` shows on the machine that pushed
 (it defaults to the project folder name at `init` time). Backend profiles
 are scanned in config order — the first profile with files under the ID's
 prefix wins.
+
+### Flags
+
+| Flag     | Effect                                                                                                                      |
+| -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `--pull` | Pull the tracked files immediately after linking. Interactively this is the post-link prompt's default; headless without it |
+|          | the pull is simply skipped — linking itself succeeded, so exit stays `0`                                                    |
+| `--json` | Machine-readable output (with `--pull`, the nested pull result rides along under `pull`)                                    |
 
 ### Example (fresh clone)
 
@@ -459,7 +536,8 @@ profiles but nothing pushed yet, it points at `init` + `push`.
 
 Self-update: checks the npm registry for a newer `vasari-sync`, shows
 `current → latest`, asks for confirmation, and runs
-`npm install -g vasari-sync@latest`. `--yes` skips the prompt.
+`npm install -g vasari-sync@latest`. `--yes` skips the prompt;
+`--json` emits `{current, latest, updated}`.
 
 ```console
 $ vsync update
@@ -485,3 +563,57 @@ silently doing nothing.
 | ----------- | ------------------------------------------------------------------- |
 | `--version` | Print the installed `vsync` version                                 |
 | `--help`    | Command list; `vsync <command> --help` for a single command's flags |
+| `--json`    | On every command: one machine-readable object on stdout — see below |
+
+---
+
+## Scripting & agents
+
+Every command runs without a TTY. Each interactive prompt has a flag
+twin: a flag wins, a TTY prompts as before, and with no TTY the missing
+flag either takes a safe default or fails fast naming the flag — nothing
+hangs. Exit codes: `0` success, `1` failure (a partial push/pull is a
+failure; its per-file results still print first).
+
+### Behavior contract
+
+- **stdout** carries exactly one JSON object (pretty-printed, 2-space
+  indent) when `--json` is passed — nothing else ever lands there.
+- **stderr** carries warnings, progress lines, and error messages.
+- On a partial push/pull the result object is printed _before_ the
+  incomplete error, so callers get per-file detail plus exit 1.
+- JSON shapes are stable: additive changes only; breaking changes require
+  a major version bump.
+
+### JSON shapes per command
+
+| Command         | Shape (top-level keys)                                                                                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`        | `{projectId, backend, files: [{path, status, note?}]}` — `status` ∈ `conflict`/`local-modified`/`remote-modified`/`missing-locally`/`remote-missing`/`unchanged` |
+| `diff`          | `{projectId, backend, files: [{path, status}], candidates: [{path, size, classification, rule?}], patches?}` — `patches` only with `--show-values`               |
+| `list`          | `{projects: [{projectId, backend, fileCount\|null, linked, path?, lastSyncedAt?, missingOnDisk?}], unreachable: [string]}`                                       |
+| `init`          | `{projectId, backend, files: [string]}`; `init --list` → `{candidates: [...]}`                                                                                   |
+| `link`          | `{projectId, backend, files: [string], pull?}` — `pull` (a full pull result) present only with `--pull`                                                          |
+| `push` / `pull` | `{projectId, backend, files: [{path, outcome, note?}], summary: {<outcome>: count}}`                                                                             |
+| `add` / `rm`    | `{added: [string]}` / `{removed: [string]}`                                                                                                                      |
+| `config`        | `{backend, saved: true, secretsStored: [string]}`; `config --show` → `{defaultBackend, profiles: {name: {backend, settings, secrets: [fieldNames]}}}`            |
+| `update`        | `{current, latest, updated}`                                                                                                                                     |
+
+Secret values never appear in any JSON output — `config --show` lists
+secret field _names_ only, `status`/`diff` carry paths and statuses only,
+and `diff --show-values --json` embeds content diffs only when explicitly
+requested (same opt-in as the prose mode).
+
+### Example
+
+```console
+$ vsync status --json
+{
+  "projectId": "my-project",
+  "backend": "s3",
+  "files": [
+    { "path": ".env", "status": "local-modified" },
+    { "path": ".env.production", "status": "unchanged" }
+  ]
+}
+```

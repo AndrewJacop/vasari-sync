@@ -7,8 +7,15 @@ import { readManifest } from "../core/manifest.js";
  * (fresh hash vs. last synced) crossed with the backend's current state
  * (one `list()` call, scoped to this project's key prefix). Paths and
  * statuses only — never file contents or values.
+ *
+ * `--json` emits `{projectId, backend, files: [{path, status, note?}]}`
+ * (status values are the LocalStatus union) instead of the prose sections.
  */
-export async function runStatusCommand(projectRoot: string, homeDir?: string): Promise<void> {
+export async function runStatusCommand(
+  projectRoot: string,
+  homeDir?: string,
+  json = false,
+): Promise<void> {
   const manifest = await readManifest(projectRoot);
   if (!manifest) {
     throw new Error("No .vsync/manifest.json found — run `vsync init` in this project first.");
@@ -31,6 +38,27 @@ export async function runStatusCommand(projectRoot: string, homeDir?: string): P
     const bucket = byStatus.get(status) ?? [];
     bucket.push({ path: entry.path, note });
     byStatus.set(status, bucket);
+  }
+
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          projectId: manifest.projectId,
+          backend: manifest.backend,
+          files: states.map(({ entry, status }) => ({
+            path: entry.path,
+            status,
+            ...(status === "remote-missing" && entry.lastSyncedHash === undefined
+              ? { note: "not pushed yet" }
+              : {}),
+          })),
+        },
+        null,
+        2,
+      ),
+    );
+    return;
   }
 
   console.log(

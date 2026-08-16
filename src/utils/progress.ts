@@ -35,7 +35,8 @@ export class Spinner {
   start(message: string): void {
     this.message = message;
     if (!this.isTty) {
-      console.log(styleText("dim", `${message}…`));
+      // stderr, not stdout — keeps `--json` stdout pure for machines.
+      process.stderr.write(styleText("dim", `${message}…`) + "\n");
       return;
     }
     if (this.timer) clearInterval(this.timer);

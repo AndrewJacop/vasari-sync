@@ -10,8 +10,11 @@ import { createBackendFromProfile } from "../core/backendResolver.js";
  * time; registry-only projects (never pushed, or deleted on the backend)
  * stay listed with a marker. Purely informational — unreachable profiles
  * are warned about, never fatal.
+ *
+ * `--json` emits `{projects: [...], unreachable: string[]}` instead of
+ * the aligned table.
  */
-export async function runListCommand(homeDir?: string): Promise<void> {
+export async function runListCommand(homeDir?: string, json = false): Promise<void> {
   const global = await readGlobalConfig(homeDir);
 
   // projectId -> { backend profile, file count }, from every profile's listing.
@@ -35,6 +38,30 @@ export async function runListCommand(homeDir?: string): Promise<void> {
 
   const registry = new Map(global.projects.map((p) => [p.projectId, p]));
   const ids = [...new Set([...remote.keys(), ...registry.keys()])].sort();
+
+  if (json) {
+    const projects = await Promise.all(
+      ids.map(async (id) => {
+        const onBackend = remote.get(id);
+        const entry = registry.get(id);
+        return {
+          projectId: id,
+          backend: onBackend?.backend ?? entry!.backend,
+          fileCount: onBackend?.files ?? null,
+          linked: entry !== undefined,
+          ...(entry
+            ? {
+                path: entry.path,
+                lastSyncedAt: entry.lastSyncedAt ?? null,
+                missingOnDisk: await pathMissing(entry),
+              }
+            : {}),
+        };
+      }),
+    );
+    console.log(JSON.stringify({ projects, unreachable: failures }, null, 2));
+    return;
+  }
 
   // File count `—` means: no configured backend currently holds this project
   // (never pushed, deleted remotely, or nothing configured). No extra marker.

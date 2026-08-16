@@ -84,13 +84,13 @@ async function writeGlobalProfile(): Promise<void> {
 }
 
 /** Drives diff and returns everything it printed, joined. */
-async function runDiff(showValues = false): Promise<string> {
+async function runDiff(showValues = false, json = false): Promise<string> {
   logs.push([]);
   const lines = logs[logs.length - 1];
   vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
     lines.push(args.map(String).join(" "));
   });
-  await runDiffCommand(projectRoot!, showValues, homeDir);
+  await runDiffCommand(projectRoot!, showValues, homeDir, json);
   return lines.join("\n");
 }
 
@@ -225,5 +225,39 @@ describe("vsync diff — guards", () => {
     } finally {
       await rm(bare, { recursive: true, force: true });
     }
+  });
+});
+
+describe("vsync diff --json", () => {
+  it("emits differing files + candidates; no patches without --show-values", async () => {
+    await makeProject("json-plain", [".env", "steady.txt"], [".env", "steady.txt"]);
+    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // local-modified
+
+    const parsed = JSON.parse(await runDiff(false, true)) as {
+      projectId: string;
+      backend: string;
+      files: { path: string; status: string }[];
+      candidates: { path: string; classification: string }[];
+      patches?: unknown;
+    };
+
+    expect(parsed.projectId).toBe("json-plain");
+    expect(parsed.backend).toBe("local-fs");
+    expect(parsed.files).toEqual([{ path: ".env", status: "local-modified" }]);
+    expect(parsed.candidates.some((c) => c.path === "local-notes.txt")).toBe(true);
+    expect(parsed.patches).toBeUndefined(); // values stay hidden
+  });
+
+  it("includes patches only with --show-values", async () => {
+    await makeProject("json-values", [".env"], [".env"]);
+    await writeFile(join(projectRoot!, ".env"), "A=2\n");
+
+    const parsed = JSON.parse(await runDiff(true, true)) as {
+      patches?: { path: string; patch: string }[];
+    };
+
+    expect(parsed.patches).toHaveLength(1);
+    expect(parsed.patches![0].path).toBe(".env");
+    expect(parsed.patches![0].patch).toContain("+A=2");
   });
 });

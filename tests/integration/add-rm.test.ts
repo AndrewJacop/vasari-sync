@@ -188,3 +188,31 @@ describe("vsync rm", () => {
     }
   });
 });
+
+describe("vsync add/rm --json", () => {
+  it("add emits {added: [...]}", async () => {
+    projectRoot = await makeProject("json-add", [".env"]);
+
+    await runAddCommand(projectRoot, ["local-notes.txt", "sub/app.local.json"], true);
+
+    const raw = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .find((l) => l.trim().startsWith("{"));
+    expect(JSON.parse(raw as string)).toEqual({
+      added: ["local-notes.txt", "sub/app.local.json"],
+    });
+  });
+
+  it("rm emits {removed: [...]}", async () => {
+    projectRoot = await makeProject("json-rm", [".env", "local-notes.txt"]);
+
+    await runRmCommand(projectRoot, [".env"], true);
+
+    const raw = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .find((l) => l.trim().startsWith("{"));
+    expect(JSON.parse(raw as string)).toEqual({ removed: [".env"] });
+  });
+});

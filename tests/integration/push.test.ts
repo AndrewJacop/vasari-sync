@@ -89,7 +89,10 @@ async function writeGlobalProfile(): Promise<void> {
 
 /** Drives push with console captured; `err` holds a thrown aggregate (if
  * any) instead of letting it escape — tests decide what to expect. */
-async function runPush(force = false): Promise<{ out: string; warns: string[]; err?: unknown }> {
+async function runPush(
+  force = false,
+  output: "prose" | "json" | "silent" = "prose",
+): Promise<{ out: string; warns: string[]; err?: unknown }> {
   const lines: string[] = [];
   const warns: string[] = [];
   vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
@@ -100,7 +103,7 @@ async function runPush(force = false): Promise<{ out: string; warns: string[]; e
   });
   let err: unknown;
   try {
-    await runPushCommand(projectRoot!, force, homeDir);
+    await runPushCommand(projectRoot!, force, homeDir, output);
   } catch (e) {
     err = e;
   }
@@ -265,5 +268,57 @@ describe("vsync push", () => {
     } finally {
       await rm(bare, { recursive: true, force: true });
     }
+  });
+});
+
+describe("vsync push --json", () => {
+  it("emits one result object on stdout, per-file outcomes included", async () => {
+    await makeProject("json-clean", [".env", "steady.txt"], [".env", "steady.txt"]);
+    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // local-modified
+
+    const { out, err } = await runPush(false, "json");
+
+    expect(err).toBeUndefined();
+    const parsed = JSON.parse(out) as {
+      projectId: string;
+      files: { path: string; outcome: string }[];
+      summary: Record<string, number>;
+    };
+    expect(parsed.projectId).toBe("json-clean");
+    expect(parsed.files).toEqual(
+      expect.arrayContaining([
+        { path: ".env", outcome: "pushed" },
+        { path: "steady.txt", outcome: "skipped-unchanged" },
+      ]),
+    );
+    expect(parsed.summary).toEqual({ pushed: 1, "skipped-unchanged": 1 });
+    // Pure stdout: exactly one JSON object, no prose header.
+    expect(out.trim().startsWith("{")).toBe(true);
+    expect(out).not.toContain("tracked file(s)");
+  });
+
+  it("prints the result BEFORE throwing on an incomplete push", async () => {
+    await makeProject("json-conflict", [".env"], [".env"]);
+    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // both sides change
+    await writeFile(join(remoteDir!, "json-conflict", ".env"), "REMOTE=1\n");
+
+    const { out, err } = await runPush(false, "json");
+
+    // Agents still get the per-file detail plus the error.
+    expect(err).toBeInstanceOf(Error);
+    expect(errMsg(err)).toMatch(/Push incomplete/);
+    const parsed = JSON.parse(out) as { files: { outcome: string }[] };
+    expect(parsed.files[0].outcome).toBe("conflicted");
+  });
+
+  it("silent mode prints nothing, returns the result (link composition)", async () => {
+    await makeProject("silent", [".env"]);
+
+    const { out } = await runPush(false, "silent");
+
+    expect(out).toBe("");
+    // The upload still happened (side effect check via manifest stamp).
+    const manifest = await readManifest(projectRoot!);
+    expect(manifest!.files[0].lastSyncedAt).toBeDefined();
   });
 });

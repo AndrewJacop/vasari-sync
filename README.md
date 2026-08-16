@@ -153,6 +153,76 @@ files never are. In the tree picker those folders are tagged
 `nested repo`. This is exactly how you sync `.env`/`CLAUDE.md` files from
 checked-out sub-repos under one umbrella project.
 
+## Scripting & agents
+
+Every command runs without a TTY. Each interactive prompt has a flag
+twin: a flag wins, a TTY prompts as before, and with no TTY the missing
+flag either takes a safe default or fails fast naming the flag — nothing
+hangs. Every command also takes `--json` for machine-readable output
+(exactly one object on stdout; warnings, progress, and errors go to
+stderr; exit codes: 0 success, 1 failure). On a partial push/pull the
+result object is still printed _before_ the error, so agents get per-file
+detail plus exit 1.
+
+### Flag matrix
+
+| Command                                       | Non-interactive flags                                                                                                                                                                                  |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `config`                                      | `--backend <name>`, `--set key=value` (repeatable), `--secret key=value` (repeatable) — or the `VSYNC_SECRET_*` env vars; a failed connection test aborts (nothing saved)                              |
+| `init`                                        | `--project-id <id>` (default: folder name), `--backend <name>` (default: global default), `--files a,b` (repeatable; omitted = track nothing), `--yes` (re-init), `--list` (print candidates and exit) |
+| `link`                                        | `--pull` (pull right after linking; without a TTY the pull is simply skipped — exit 0)                                                                                                                 |
+| `update`                                      | `-y/--yes` (without it and no TTY: error)                                                                                                                                                              |
+| `add`, `rm`, `status`, `diff`, `push`, `pull` | already non-interactive (`--force` on push/pull, `--show-values` on diff)                                                                                                                              |
+
+### Secrets for `config`
+
+Each backend's secret fields can arrive via flag or env var (constant-case
+field name, `VSYNC_SECRET_` prefix). `--secret` beats the env var; both
+beat a previously saved secret. A secret supplied through `--set` is
+auto-routed to secret storage, never the plaintext profile. A `gh` CLI
+token is reused automatically for `github-repo` when no other token is
+supplied.
+
+```sh
+VSYNC_SECRET_ACCESS_KEY_ID=AKIA... \
+VSYNC_SECRET_SECRET_ACCESS_KEY=... \
+  vsync config --backend s3 --set region=us-east-1 --set bucket=my-bucket --json
+```
+
+| Backend       | Secret fields                                                  |
+| ------------- | -------------------------------------------------------------- |
+| `s3`          | `VSYNC_SECRET_ACCESS_KEY_ID`, `VSYNC_SECRET_SECRET_ACCESS_KEY` |
+| `sftp`        | `VSYNC_SECRET_PASSWORD`                                        |
+| `webdav`      | `VSYNC_SECRET_PASSWORD`                                        |
+| `github-repo` | `VSYNC_SECRET_TOKEN`                                           |
+
+(`--secret` argv values are visible in process listings — prefer env vars.)
+
+### JSON shapes (stable; additive changes only)
+
+- `status` → `{projectId, backend, files: [{path, status, note?}]}`
+  — `status` ∈ `conflict | local-modified | remote-modified | missing-locally | remote-missing | unchanged`
+- `diff` → `{projectId, backend, files: [{path, status}], candidates: [{path, size, classification, rule?}], patches?: [{path, patch}]}` (`patches` only with `--show-values`)
+- `list` → `{projects: [{projectId, backend, fileCount|null, linked, path?, lastSyncedAt?, missingOnDisk?}], unreachable: [string]}`
+- `init` → `{projectId, backend, files: [string]}`; `init --list` → `{candidates: [...]}`
+- `link` → `{projectId, backend, files: [string], pull?: <pull result>}` (`pull` present only with `--pull`)
+- `push`/`pull` → `{projectId, backend, files: [{path, outcome, note?}], summary: {<outcome>: count}}`
+- `add` → `{added: [string]}`; `rm` → `{removed: [string]}`
+- `config` → `{backend, saved: true, secretsStored: [string]}`; `config --show` → `{defaultBackend, profiles: {name: {backend, settings, secrets: [fieldNames]}}}`
+- `update` → `{current, latest, updated}`
+
+### Typical agent session
+
+```sh
+vsync config --backend local-fs --set basePath=/srv/vsync --json </dev/null
+cd myproject
+vsync init --list --json </dev/null            # discovery: what's trackable
+vsync init --project-id myproject --files .env --json </dev/null
+vsync status --json                            # paths + statuses only
+vsync push --json
+vsync pull --json                              # on the next machine after `link`
+```
+
 ## Updating
 
 ```sh

@@ -39,9 +39,23 @@ program
 
 program
   .command("config")
-  .description("Set up storage backend + credentials (interactive)")
+  .description("Set up storage backend + credentials")
   .option("--show", "print current config with secrets redacted")
   .option("--set-default <backend>", "set the default backend without prompts")
+  .option("--backend <name>", "non-interactive: backend to configure (see `vsync config --show`)")
+  .option(
+    "--set <key=value>",
+    "non-interactive: set a backend setting (repeatable)",
+    (v: string, prev: string[]) => prev.concat(v),
+    [],
+  )
+  .option(
+    "--secret <key=value>",
+    "non-interactive: set a secret (repeatable; prefer VSYNC_SECRET_* env vars)",
+    (v: string, prev: string[]) => prev.concat(v),
+    [],
+  )
+  .option("--json", "machine-readable output")
   .action(async (options) => {
     try {
       await runConfigCommand(options);
@@ -53,10 +67,21 @@ program
 
 program
   .command("init")
-  .description("Set up this project: pick files to track and a storage backend (interactive)")
-  .action(async () => {
+  .description("Set up this project: pick files to track and a storage backend")
+  .option("--project-id <id>", "non-interactive: project ID (default: folder name)")
+  .option("--backend <name>", "non-interactive: backend for this project (default: global default)")
+  .option(
+    "--files <paths>",
+    "non-interactive: comma-separated project-relative file paths to track (repeatable)",
+    (v: string, prev: string[]) => prev.concat(v),
+    [],
+  )
+  .option("--yes", "re-initialize despite an existing manifest")
+  .option("--list", "print candidate files (same scan as the picker) and exit")
+  .option("--json", "machine-readable output")
+  .action(async (options) => {
     try {
-      await runInitCommand(process.cwd());
+      await runInitCommand(process.cwd(), options);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -67,9 +92,10 @@ program
   .command("add")
   .description("Track file(s) for syncing (manifest only — nothing is uploaded)")
   .argument("<path...>", "file path(s) inside the project")
-  .action(async (paths: string[]) => {
+  .option("--json", "machine-readable output")
+  .action(async (paths: string[], options: { json?: boolean }) => {
     try {
-      await runAddCommand(process.cwd(), paths);
+      await runAddCommand(process.cwd(), paths, options.json === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -80,9 +106,10 @@ program
   .command("rm")
   .description("Stop tracking file(s) — local files are NOT deleted")
   .argument("<path...>", "tracked file path(s)")
-  .action(async (paths: string[]) => {
+  .option("--json", "machine-readable output")
+  .action(async (paths: string[], options: { json?: boolean }) => {
     try {
-      await runRmCommand(process.cwd(), paths);
+      await runRmCommand(process.cwd(), paths, options.json === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -92,9 +119,10 @@ program
 program
   .command("status")
   .description("Show sync status of tracked files (paths and statuses only)")
-  .action(async () => {
+  .option("--json", "machine-readable output")
+  .action(async (options: { json?: boolean }) => {
     try {
-      await runStatusCommand(process.cwd());
+      await runStatusCommand(process.cwd(), undefined, options.json === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -105,9 +133,15 @@ program
   .command("diff")
   .description("Show differences between local files and the backend copy")
   .option("--show-values", "include full content diffs (prints actual file values)")
-  .action(async (options: { showValues?: boolean }) => {
+  .option("--json", "machine-readable output")
+  .action(async (options: { showValues?: boolean; json?: boolean }) => {
     try {
-      await runDiffCommand(process.cwd(), options.showValues === true);
+      await runDiffCommand(
+        process.cwd(),
+        options.showValues === true,
+        undefined,
+        options.json === true,
+      );
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -118,9 +152,15 @@ program
   .command("push")
   .description("Upload tracked files that changed since the last sync")
   .option("-f, --force", "overwrite remote-only changes (local version wins)")
-  .action(async (options: { force?: boolean }) => {
+  .option("--json", "machine-readable output")
+  .action(async (options: { force?: boolean; json?: boolean }) => {
     try {
-      await runPushCommand(process.cwd(), options.force === true);
+      await runPushCommand(
+        process.cwd(),
+        options.force === true,
+        undefined,
+        options.json === true ? "json" : "prose",
+      );
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -131,9 +171,15 @@ program
   .command("pull")
   .description("Download tracked files that changed on the backend since the last sync")
   .option("-f, --force", "overwrite local-only changes (remote version wins)")
-  .action(async (options: { force?: boolean }) => {
+  .option("--json", "machine-readable output")
+  .action(async (options: { force?: boolean; json?: boolean }) => {
     try {
-      await runPullCommand(process.cwd(), options.force === true);
+      await runPullCommand(
+        process.cwd(),
+        options.force === true,
+        undefined,
+        options.json === true ? "json" : "prose",
+      );
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -143,9 +189,10 @@ program
 program
   .command("list")
   .description("Show all known projects (on your backends and linked on this machine)")
-  .action(async () => {
+  .option("--json", "machine-readable output")
+  .action(async (options: { json?: boolean }) => {
     try {
-      await runListCommand();
+      await runListCommand(undefined, options.json === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -156,9 +203,10 @@ program
   .command("update")
   .description("Update vasari-sync to the latest version from npm")
   .option("-y, --yes", "install the new version without asking")
-  .action(async (options: { yes?: boolean }) => {
+  .option("--json", "machine-readable output")
+  .action(async (options: { yes?: boolean; json?: boolean }) => {
     try {
-      await runUpdateCommand(options.yes === true);
+      await runUpdateCommand(options.yes === true, options.json === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -171,9 +219,14 @@ program
     "Adopt an existing backend project into this clone: rebuild the manifest from the backend and optionally pull",
   )
   .argument("<projectId>", "project ID (see `vsync list` on the machine that pushed)")
-  .action(async (projectId: string) => {
+  .option(
+    "--pull",
+    "pull the files immediately after linking (default: ask, or skip when non-interactive)",
+  )
+  .option("--json", "machine-readable output")
+  .action(async (projectId: string, options: { pull?: boolean; json?: boolean }) => {
     try {
-      await runLinkCommand(process.cwd(), projectId);
+      await runLinkCommand(process.cwd(), projectId, undefined, options);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;

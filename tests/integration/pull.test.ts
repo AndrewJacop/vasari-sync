@@ -104,7 +104,10 @@ async function writeGlobalProfile(): Promise<void> {
 
 /** Drives pull with console captured; `err` holds a thrown aggregate (if
  * any) instead of letting it escape — tests decide what to expect. */
-async function runPull(force = false): Promise<{ out: string; warns: string[]; err?: unknown }> {
+async function runPull(
+  force = false,
+  output: "prose" | "json" | "silent" = "prose",
+): Promise<{ out: string; warns: string[]; err?: unknown }> {
   const lines: string[] = [];
   const warns: string[] = [];
   vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
@@ -115,7 +118,7 @@ async function runPull(force = false): Promise<{ out: string; warns: string[]; e
   });
   let err: unknown;
   try {
-    await runPullCommand(projectRoot!, force, homeDir);
+    await runPullCommand(projectRoot!, force, homeDir, output);
   } catch (e) {
     err = e;
   }
@@ -328,5 +331,44 @@ describe("vsync pull", () => {
     } finally {
       await rm(bare, { recursive: true, force: true });
     }
+  });
+});
+
+describe("vsync pull --json", () => {
+  it("emits one result object with per-file outcomes and notes", async () => {
+    await makeProject("json-clean", [".env", "steady.txt"], [".env", "steady.txt"]);
+    await writeFile(join(remoteDir!, "json-clean", ".env"), "REMOTE=1\n"); // remote-modified
+
+    const { out, err } = await runPull(false, "json");
+
+    expect(err).toBeUndefined();
+    const parsed = JSON.parse(out) as {
+      projectId: string;
+      files: { path: string; outcome: string; note?: string }[];
+      summary: Record<string, number>;
+    };
+    expect(parsed.projectId).toBe("json-clean");
+    expect(parsed.files).toEqual(
+      expect.arrayContaining([
+        { path: ".env", outcome: "pulled" },
+        { path: "steady.txt", outcome: "skipped-unchanged" },
+      ]),
+    );
+    expect(parsed.summary).toEqual({ pulled: 1, "skipped-unchanged": 1 });
+    expect(out.trim().startsWith("{")).toBe(true);
+    expect(out).not.toContain("tracked file(s)");
+  });
+
+  it("prints the result BEFORE throwing on an incomplete pull", async () => {
+    await makeProject("json-conflict", [".env"], [".env"]);
+    await writeFile(join(projectRoot!, ".env"), "A=2\n"); // both sides change
+    await writeFile(join(remoteDir!, "json-conflict", ".env"), "REMOTE=1\n");
+
+    const { out, err } = await runPull(false, "json");
+
+    expect(err).toBeInstanceOf(Error);
+    expect(errMsg(err)).toMatch(/Pull incomplete/);
+    const parsed = JSON.parse(out) as { files: { outcome: string }[] };
+    expect(parsed.files[0].outcome).toBe("conflicted");
   });
 });

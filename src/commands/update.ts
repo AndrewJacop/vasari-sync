@@ -40,9 +40,10 @@ function npm(args: string[], timeoutMs: number): Promise<string> {
 /**
  * `vsync update` — check npm for a newer vasari-sync and install it
  * globally. Confirm-first unless `--yes`; a registry outage is an
- * actionable error, never a silent no-op.
+ * actionable error, never a silent no-op. `--json` emits
+ * `{current, latest, updated}`.
  */
-export async function runUpdateCommand(yes = false): Promise<void> {
+export async function runUpdateCommand(yes = false, json = false): Promise<void> {
   const current = runningVersion();
   let latest: string;
   try {
@@ -54,7 +55,8 @@ export async function runUpdateCommand(yes = false): Promise<void> {
   }
 
   if (latest === current) {
-    console.log(`vasari-sync ${current} — already up to date.`);
+    if (json) console.log(JSON.stringify({ current, latest, updated: false }, null, 2));
+    else console.log(`vasari-sync ${current} — already up to date.`);
     return;
   }
 
@@ -67,6 +69,10 @@ export async function runUpdateCommand(yes = false): Promise<void> {
   }
 
   await withSpinner("Updating vasari-sync", () => npm(["install", "-g", `${PKG}@latest`], 300_000));
+  if (json) {
+    console.log(JSON.stringify({ current, latest, updated: true }, null, 2));
+    return;
+  }
   console.log(`Updated vasari-sync ${current} → ${latest}.`);
   console.log("(the running session keeps the old version; new runs pick up the new one)");
 }

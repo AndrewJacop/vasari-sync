@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Fully non-interactive mode for every command** (AI agents, CI, and
+  the future VS Code extension): each prompt has a flag twin, and with
+  no TTY a missing flag either takes a safe default or fails fast naming
+  the flag — nothing hangs.
+  - `config --backend <name> --set key=value [--secret key=value]` —
+    secrets also arrive via `VSYNC_SECRET_<FIELD>` env vars (e.g.
+    `VSYNC_SECRET_ACCESS_KEY_ID`); `--secret` beats the env var; a secret
+    passed via `--set` is auto-routed to secret storage. A failed
+    connection test aborts without saving.
+  - `init --project-id / --backend / --files a,b / --yes`, plus
+    `init --list` to print candidate files (the agent discovery step).
+  - `link --pull` (pull right after linking; headless without the flag
+    skips the pull, exit 0).
+- **`--json` on every command** — exactly one machine-readable object on
+  stdout (warnings/progress/errors on stderr). Partial push/pull results
+  are printed before the incomplete error, so agents get per-file detail
+  plus exit 1. Non-TTY spinner lines moved to stderr to keep stdout pure.
+- README "Scripting & agents" section documenting the flag matrix, secret
+  env vars, and the stable JSON shapes.
+
 ## [0.4.0] - 2026-08-16
 
 ### Added
@@ -24,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Spinners on every slow remote step** — backend listings (the shared
   slow call in `status`/`diff`/`push`/`pull`/`link`/`list`), connection
   tests in `config`/`init`, per-file remote fetches in `diff
-  --show-values`, and `update`'s npm calls, in addition to push/pull
+--show-values`, and `update`'s npm calls, in addition to push/pull
   transfers. Non-interactive output stays clean plain lines.
 
 ## [0.3.0] - 2026-08-16

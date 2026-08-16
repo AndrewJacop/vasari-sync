@@ -43,6 +43,7 @@ vi.mock("../../src/storage/handlers/github-repo.js", () => {
   return { GithubRepoHandler: FakeGithubRepoHandler };
 });
 
+import { confirm } from "@inquirer/prompts";
 import { runLinkCommand } from "../../src/commands/link.js";
 import { readManifest } from "../../src/core/manifest.js";
 import { readGlobalConfig } from "../../src/core/globalConfig.js";
@@ -61,7 +62,11 @@ const machineA: { root: string; id: string; files: Record<string, string> } = {
 };
 
 beforeEach(async () => {
+  vi.clearAllMocks(); // isolate no-prompt assertions from earlier tests
   vi.spyOn(console, "log").mockImplementation(() => {});
+  // Scripted confirm answers need the interactive branch to fire (vitest
+  // runs headless, which reads as non-interactive).
+  Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
   homeDir = await mkdtemp(join(tmpdir(), "vsync-link-home-"));
   remoteDir = await mkdtemp(join(tmpdir(), "vsync-link-remote-"));
   machineA.root = await mkdtemp(join(tmpdir(), "vsync-link-a-"));
@@ -89,6 +94,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
   await Promise.all(
     [homeDir, remoteDir, machineA.root].map((d) => rm(d, { recursive: true, force: true })),
   );
@@ -198,5 +204,71 @@ describe("vsync link", () => {
     expect(Fake.listedPrefix).toBe("my-app/");
     // The fake listing became a manifest entry.
     expect((await readManifest(clone))?.files.map((f) => f.path)).toEqual([".env"]);
+  });
+
+  it("non-interactive without --pull: links, skips the pull, exits cleanly", async () => {
+    Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
+    const clone = await freshClone();
+
+    await runLinkCommand(clone, machineA.id, homeDir, {});
+
+    // No prompt fired (none to answer); link itself succeeded.
+    expect(confirm).not.toHaveBeenCalled();
+    expect((await readManifest(clone))?.files).toHaveLength(2);
+    await expect(stat(join(clone, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("whenever you're ready"));
+  });
+
+  it("non-interactive with --pull: links and pulls without prompting", async () => {
+    Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
+    const clone = await freshClone();
+
+    await runLinkCommand(clone, machineA.id, homeDir, { pull: true });
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await readFile(join(clone, ".env"), "utf8")).toBe(machineA.files[".env"]);
+    const pulled = (await readManifest(clone))!.files;
+    expect(pulled.every((f) => f.hash.startsWith("sha256:") && f.lastSyncedHash)).toBe(true);
+  });
+
+  it("--json --pull: one object with the nested pull result, no prose", async () => {
+    Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
+    const clone = await freshClone();
+
+    await runLinkCommand(clone, machineA.id, homeDir, { pull: true, json: true });
+
+    // Exactly one JSON object on stdout — the pull printed nothing itself
+    // (nested objects are indented; only the top-level object is at column 0).
+    const out = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .join("\n");
+    const parsed = JSON.parse(out) as {
+      projectId: string;
+      backend: string;
+      files: string[];
+      pull?: { files: { outcome: string }[] };
+    };
+    expect(parsed.projectId).toBe(machineA.id);
+    expect(parsed.files.sort()).toEqual([".env", "local-notes.txt"]);
+    expect(parsed.pull?.files.every((f) => f.outcome === "pulled")).toBe(true);
+  });
+
+  it("--json without --pull: link result only, no pull key", async () => {
+    Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
+    const clone = await freshClone();
+
+    await runLinkCommand(clone, machineA.id, homeDir, { json: true });
+
+    const raw = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .find((l) => l.trim().startsWith("{"));
+    expect(raw).toBeDefined();
+    expect(JSON.parse(raw as string)).toEqual({
+      projectId: machineA.id,
+      backend: "local-fs",
+      files: [".env", "local-notes.txt"],
+    });
   });
 });

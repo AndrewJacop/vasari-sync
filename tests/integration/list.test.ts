@@ -28,13 +28,13 @@ async function writeRegistry(projects: GlobalConfig["projects"]): Promise<void> 
 }
 
 /** Drives list and returns everything it printed, joined. */
-async function runList(): Promise<string> {
+async function runList(json = false): Promise<string> {
   captured.push([]);
   const lines = captured[captured.length - 1];
   vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
     lines.push(args.map(String).join(" "));
   });
-  await runListCommand(homeDir);
+  await runListCommand(homeDir, json);
   return lines.join("\n");
 }
 
@@ -211,6 +211,82 @@ describe("vsync list", () => {
       new RegExp(`alpha\\s+local-fs\\s+1 file\\s+2026-08-16 09:00\\s+${escapeRe(projectA)}$`, "m"),
     );
     expect(out).not.toContain("not linked here");
+  });
+});
+
+describe("vsync list --json", () => {
+  it("emits linked + remote-only + unreachable in one JSON object", async () => {
+    await makeHome();
+    const remoteDir = await mkdtemp(join(tmpdir(), "vsync-list-json-remote-"));
+    projectA = await mkdtemp(join(tmpdir(), "vsync-list-json-a-"));
+    await mkdir(join(remoteDir, "alpha"), { recursive: true });
+    await writeFile(join(remoteDir, "alpha", ".env"), "A=1");
+    await writeFile(join(remoteDir, "alpha", "notes.md"), "n");
+    await writeRegistry([
+      {
+        projectId: "alpha",
+        path: projectA,
+        backend: "local-fs",
+        lastSyncedAt: "2026-08-16T09:00:00.000Z",
+      },
+    ]);
+    const config = await readGlobalConfig(homeDir);
+    config.profiles["local-fs"] = { backend: "local-fs", settings: { basePath: remoteDir } };
+    // An unreachable second profile lands in `unreachable`, not a crash.
+    config.profiles["broken"] = {
+      backend: "local-fs",
+      settings: { basePath: join(remoteDir, "404") },
+    };
+    await writeGlobalConfig(config, homeDir);
+
+    const parsed = JSON.parse(await runList(true)) as {
+      projects: {
+        projectId: string;
+        backend: string;
+        fileCount: number | null;
+        linked: boolean;
+        path?: string;
+        lastSyncedAt?: string | null;
+        missingOnDisk?: boolean;
+      }[];
+      unreachable: string[];
+    };
+
+    expect(parsed.projects).toHaveLength(1);
+    const alpha = parsed.projects[0];
+    expect(alpha).toMatchObject({
+      projectId: "alpha",
+      backend: "local-fs",
+      fileCount: 2,
+      linked: true,
+      lastSyncedAt: "2026-08-16T09:00:00.000Z",
+      missingOnDisk: false,
+    });
+    expect(alpha.path).toBe(projectA);
+    // The second profile points at a missing dir — reported, never fatal.
+    expect(parsed.unreachable).toHaveLength(1);
+    expect(parsed.unreachable[0]).toMatch(/^broken: /);
+  });
+
+  it("marks remote-only projects unlinked and registry-only fileCount null", async () => {
+    await makeHome();
+    projectA = await mkdtemp(join(tmpdir(), "vsync-list-json-remote-only-"));
+    const remoteDir = await mkdtemp(join(tmpdir(), "vsync-list-json-ro-"));
+    await mkdir(join(remoteDir, "OPTO"), { recursive: true });
+    await writeFile(join(remoteDir, "OPTO", ".env"), "A=1");
+    await writeRegistry([{ projectId: "registry-only", path: projectA, backend: "s3" }]);
+    const config = await readGlobalConfig(homeDir);
+    config.profiles["local-fs"] = { backend: "local-fs", settings: { basePath: remoteDir } };
+    await writeGlobalConfig(config, homeDir);
+
+    const parsed = JSON.parse(await runList(true)) as {
+      projects: { projectId: string; linked: boolean; fileCount: number | null }[];
+    };
+
+    const opto = parsed.projects.find((p) => p.projectId === "OPTO");
+    expect(opto).toMatchObject({ linked: false, fileCount: 1 });
+    const regOnly = parsed.projects.find((p) => p.projectId === "registry-only");
+    expect(regOnly).toMatchObject({ linked: true, fileCount: null });
   });
 });
 

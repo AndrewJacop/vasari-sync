@@ -54,7 +54,7 @@ function remotePathOf(projectId: string, rel: string, remoteDir: string): string
 
 /** Runs one command with fresh console spies, banners it into the
  * transcript, and returns everything it printed, joined. */
-async function run(label: string, fn: () => Promise<void>): Promise<string> {
+async function run(label: string, fn: () => Promise<unknown>): Promise<string> {
   const lines: string[] = [];
   vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
     lines.push(a.map(String).join(" "));
@@ -73,6 +73,10 @@ async function run(label: string, fn: () => Promise<void>): Promise<string> {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: undefined,
+    configurable: true,
+  }); // undo the interactive stub set by the session below
   for (const dir of scratchDirs) await rm(dir, { recursive: true, force: true });
   scratchDirs.length = 0;
 });
@@ -82,6 +86,9 @@ describe("vsync end-to-end — a full user session on local-fs", () => {
     "init → status → push → edit → status → diff → push → add → push → rm → clone-pull → list",
     { timeout: 120_000 },
     async () => {
+      // Scripted prompts need the interactive branches to fire (vitest runs
+      // headless, which reads as non-interactive).
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
       // ── Machine A, fresh project ─────────────────────────────────────
       const projectRoot = await mkdtemp(join(tmpdir(), "vsync-e2e-app-"));
       const home = await mkdtemp(join(tmpdir(), "vsync-e2e-home-"));
@@ -116,7 +123,7 @@ describe("vsync end-to-end — a full user session on local-fs", () => {
       // extra.key is boosted/pre-checked but deliberately left unselected
       // here — the user adds it later via `vsync add`.
       q.answers = ["demo-app", "local-fs", [".env", "local-notes.txt"]];
-      const initOut = await run("init", () => runInitCommand(projectRoot, home));
+      const initOut = await run("init", () => runInitCommand(projectRoot, {}, home));
 
       expect(initOut).toContain("Connection OK");
       expect(initOut).toContain("Initialized 'demo-app'");

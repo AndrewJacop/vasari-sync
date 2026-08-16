@@ -7,6 +7,7 @@ import { readManifest, writeManifest } from "../core/manifest.js";
 import { computeFileSyncStates, type FileSyncState } from "../core/syncState.js";
 import { Spinner } from "../utils/progress.js";
 import { remoteKeyFor } from "../utils/paths.js";
+import type { OutputMode } from "./push.js";
 
 /**
  * `vsync pull` — download tracked files that changed on the backend since
@@ -32,6 +33,11 @@ import { remoteKeyFor } from "../utils/paths.js";
  * correct even where the backend's etagOrHash uses another scheme).
  * Partial failures leave the manifest accurate per-file, not
  * all-or-nothing.
+ *
+ * Output modes mirror push: "prose" (default), "json" (one result object
+ * on stdout, printed BEFORE an incomplete error so agents get per-file
+ * detail plus exit 1), "silent" (returned for composition — link uses
+ * this).
  */
 
 type PullOutcome =
@@ -59,17 +65,26 @@ const OUTCOME_SUMMARY: Record<PullOutcome, string> = {
   failed: "failed",
 };
 
-interface PullResult {
+interface PullResultFile {
   path: string;
   outcome: PullOutcome;
   note?: string;
+}
+
+/** What `vsync pull` reports (prose, --json, and link composition). */
+export interface PullResult {
+  projectId: string;
+  backend: string;
+  files: PullResultFile[];
+  summary: Partial<Record<PullOutcome, number>>;
 }
 
 export async function runPullCommand(
   projectRoot: string,
   force: boolean,
   homeDir?: string,
-): Promise<void> {
+  output: OutputMode = "prose",
+): Promise<PullResult> {
   const manifest = await readManifest(projectRoot);
   if (!manifest) {
     throw new Error("No .vsync/manifest.json found — run `vsync init` in this project first.");
@@ -82,12 +97,27 @@ export async function runPullCommand(
   );
   const states = await computeFileSyncStates(projectRoot, manifest, remoteByKey);
 
-  console.log(
-    `Project '${manifest.projectId}' (backend: ${manifest.backend}) — ${manifest.files.length} tracked file(s)`,
-  );
+  const emptyResult: PullResult = {
+    projectId: manifest.projectId,
+    backend: manifest.backend,
+    files: [],
+    summary: {},
+  };
   if (manifest.files.length === 0) {
-    console.log("No tracked files yet — use `vsync add <path>` or re-run `vsync init`.");
-    return;
+    if (output === "prose") {
+      console.log(
+        `Project '${manifest.projectId}' (backend: ${manifest.backend}) — 0 tracked file(s)`,
+      );
+      console.log("No tracked files yet — use `vsync add <path>` or re-run `vsync init`.");
+    } else if (output === "json") {
+      console.log(JSON.stringify(emptyResult, null, 2));
+    }
+    return emptyResult;
+  }
+  if (output === "prose") {
+    console.log(
+      `Project '${manifest.projectId}' (backend: ${manifest.backend}) — ${manifest.files.length} tracked file(s)`,
+    );
   }
 
   // Loud, up-front warning about what --force destroys — before any download.
@@ -102,7 +132,7 @@ export async function runPullCommand(
     );
   }
 
-  const results: PullResult[] = [];
+  const results: PullResultFile[] = [];
   const syncedAt = new Date().toISOString();
   const spinner = new Spinner();
   let dirty = false;
@@ -179,26 +209,39 @@ export async function runPullCommand(
     await writeManifest(projectRoot, manifest);
   }
 
-  for (const r of results) {
-    console.log(`  ${r.path} — ${OUTCOME_LABEL[r.outcome]}${r.note ? ` (${r.note})` : ""}`);
-  }
   const counts = new Map<PullOutcome, number>();
   for (const r of results) counts.set(r.outcome, (counts.get(r.outcome) ?? 0) + 1);
-  // Fixed order so the summary doesn't shuffle with file sort order.
-  const SUMMARY_ORDER: PullOutcome[] = [
-    "pulled",
-    "skipped-unchanged",
-    "conflicted",
-    "needs-push",
-    "missing-remotely",
-    "failed",
-  ];
-  const summary: string[] = [];
-  for (const outcome of SUMMARY_ORDER) {
-    const n = counts.get(outcome);
-    if (n) summary.push(`${n} ${OUTCOME_SUMMARY[outcome]}`);
+  const result: PullResult = {
+    projectId: manifest.projectId,
+    backend: manifest.backend,
+    files: results,
+    summary: Object.fromEntries(counts) as Partial<Record<PullOutcome, number>>,
+  };
+
+  if (output === "prose") {
+    for (const r of results) {
+      console.log(`  ${r.path} — ${OUTCOME_LABEL[r.outcome]}${r.note ? ` (${r.note})` : ""}`);
+    }
+    // Fixed order so the summary doesn't shuffle with file sort order.
+    const SUMMARY_ORDER: PullOutcome[] = [
+      "pulled",
+      "skipped-unchanged",
+      "conflicted",
+      "needs-push",
+      "missing-remotely",
+      "failed",
+    ];
+    const summary: string[] = [];
+    for (const outcome of SUMMARY_ORDER) {
+      const n = counts.get(outcome);
+      if (n) summary.push(`${n} ${OUTCOME_SUMMARY[outcome]}`);
+    }
+    console.log(`Summary: ${summary.join(", ")}`);
+  } else if (output === "json") {
+    // Printed BEFORE the incomplete error below: agents get the per-file
+    // detail on stdout plus exit 1 + stderr error.
+    console.log(JSON.stringify(result, null, 2));
   }
-  console.log(`Summary: ${summary.join(", ")}`);
 
   // Stamp the global registry's lastSyncedAt (what `vsync list` shows) —
   // only when something actually downloaded.
@@ -226,4 +269,5 @@ export async function runPullCommand(
         `The manifest records only successful downloads.`,
     );
   }
+  return result;
 }

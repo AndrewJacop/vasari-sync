@@ -15,9 +15,14 @@ import { toProjectRelativePath } from "../utils/paths.js";
  * and local files are left exactly as they are.
  *
  * All-or-nothing: every path is validated before any entry is written, so
- * one bad path can't leave a half-updated manifest behind.
+ * one bad path can't leave a half-updated manifest behind. `--json` emits
+ * `{added: string[]}`.
  */
-export async function runAddCommand(projectRoot: string, paths: string[]): Promise<void> {
+export async function runAddCommand(
+  projectRoot: string,
+  paths: string[],
+  json = false,
+): Promise<void> {
   const manifest = await readManifest(projectRoot);
   if (!manifest) {
     throw new Error("No .vsync/manifest.json found — run `vsync init` in this project first.");
@@ -50,6 +55,10 @@ export async function runAddCommand(projectRoot: string, paths: string[]): Promi
   }
   await writeManifest(projectRoot, manifest);
 
+  if (json) {
+    console.log(JSON.stringify({ added: relPaths }, null, 2));
+    return;
+  }
   console.log(`Added ${relPaths.length} file(s) to tracking: ${relPaths.join(", ")}.`);
   console.log("Nothing was uploaded — run `vsync push` to sync tracked files.");
 }

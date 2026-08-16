@@ -22,7 +22,7 @@ vi.mock("../../src/utils/treeCheckbox.js", () => ({
   treeCheckbox: vi.fn(async () => q.answers.shift()),
 }));
 
-import { input } from "@inquirer/prompts";
+import { input, select } from "@inquirer/prompts";
 import { runInitCommand } from "../../src/commands/init.js";
 import { treeCheckbox } from "../../src/utils/treeCheckbox.js";
 import { hashFile } from "../../src/core/hash.js";
@@ -41,6 +41,12 @@ async function exists(p: string): Promise<boolean> {
 }
 
 const execFileAsync = promisify(execFile);
+
+/** Stubs stdin TTY-ness: interactive branches check it, and vitest runs
+ * headless (isTTY undefined = non-interactive) by default. */
+function setStdinTty(isTty: boolean | undefined): void {
+  Object.defineProperty(process.stdin, "isTTY", { value: isTty, configurable: true });
+}
 
 function script(...answers: unknown[]): void {
   q.answers = answers;
@@ -65,6 +71,7 @@ let projectRoot: string;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  setStdinTty(true); // scripted-prompt tests simulate an interactive terminal
   home = await mkdtemp(join(tmpdir(), "vsync-init-home-"));
   storageDir = await mkdtemp(join(tmpdir(), "vsync-init-remote-"));
   await writeGlobalConfig(
@@ -82,6 +89,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  setStdinTty(undefined);
   await rm(home, { recursive: true, force: true });
   await rm(storageDir, { recursive: true, force: true });
   if (projectRoot) await rm(projectRoot, { recursive: true, force: true });
@@ -92,7 +100,7 @@ describe("vsync init — first run", () => {
     projectRoot = await makeProject("app");
     script("my-app", "local-fs", [".env"]);
 
-    await runInitCommand(projectRoot, home);
+    await runInitCommand(projectRoot, {}, home);
 
     const manifest = await readManifest(projectRoot);
     expect(manifest).not.toBeNull();
@@ -126,7 +134,7 @@ describe("vsync init — first run", () => {
     const defaultId = basename(projectRoot);
     script(defaultId, "local-fs", []);
 
-    await runInitCommand(projectRoot, home);
+    await runInitCommand(projectRoot, {}, home);
 
     expect(vi.mocked(input)).toHaveBeenCalledWith(expect.objectContaining({ default: defaultId }));
     expect(vi.mocked(treeCheckbox)).toHaveBeenCalledTimes(1);
@@ -143,7 +151,7 @@ describe("vsync init — first run", () => {
     projectRoot = await makeProject("unselected");
     script("unselected-app", "local-fs", ["local-notes.txt"]);
 
-    await runInitCommand(projectRoot, home);
+    await runInitCommand(projectRoot, {}, home);
 
     const manifest = await readManifest(projectRoot);
     expect(manifest!.files.map((f) => f.path)).toEqual(["local-notes.txt"]);
@@ -155,7 +163,7 @@ describe("vsync init — first run", () => {
     await writeFile(join(projectRoot, "README.md"), "nothing ignored here");
     script("empty-app", "local-fs");
 
-    await runInitCommand(projectRoot, home);
+    await runInitCommand(projectRoot, {}, home);
 
     expect(vi.mocked(treeCheckbox)).not.toHaveBeenCalled();
     const manifest = await readManifest(projectRoot);
@@ -167,7 +175,7 @@ describe("vsync init — first run", () => {
     projectRoot = await makeProject("noprofile");
     script("noprofile-app", "sftp");
 
-    await expect(runInitCommand(projectRoot, home)).rejects.toThrow(
+    await expect(runInitCommand(projectRoot, {}, home)).rejects.toThrow(
       /No saved profile for 'sftp'.*`vsync config`/,
     );
     // Nothing was written.
@@ -176,17 +184,171 @@ describe("vsync init — first run", () => {
   });
 });
 
+describe("vsync init — non-interactive (flags, no prompts)", () => {
+  beforeEach(() => setStdinTty(undefined)); // headless = non-interactive
+
+  it("initializes from flags alone and never prompts", async () => {
+    projectRoot = await makeProject("agent");
+
+    await runInitCommand(
+      projectRoot,
+      { projectId: "agent-app", backend: "local-fs", files: [".env"] },
+      home,
+    );
+
+    expect(input).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
+    expect(treeCheckbox).not.toHaveBeenCalled();
+    const manifest = await readManifest(projectRoot);
+    expect(manifest!.projectId).toBe("agent-app");
+    expect(manifest!.files.map((f) => f.path)).toEqual([".env"]);
+    expect(manifest!.files[0].hash).toBe(await hashFile(join(projectRoot, ".env")));
+  });
+
+  it("defaults projectId to the folder name, backend to the global default, tracks nothing", async () => {
+    projectRoot = await makeProject("headless");
+
+    await runInitCommand(projectRoot, {}, home);
+
+    const manifest = await readManifest(projectRoot);
+    expect(manifest!.projectId).toBe(basename(projectRoot));
+    expect(manifest!.backend).toBe("local-fs");
+    expect(manifest!.files).toEqual([]);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("No files tracked yet"));
+  });
+
+  it("fails fast with no default backend and no --backend", async () => {
+    projectRoot = await makeProject("nodefault");
+    const config = await readGlobalConfig(home);
+    config.defaultBackend = undefined;
+    await writeGlobalConfig(config, home);
+
+    await expect(runInitCommand(projectRoot, {}, home)).rejects.toThrow(
+      /Non-interactive init: no default backend configured — pass --backend/,
+    );
+    expect(await readManifest(projectRoot)).toBeNull();
+  });
+
+  it("refuses re-init without --yes, proceeds with it", async () => {
+    projectRoot = await makeProject("reinit-flag");
+    await runInitCommand(projectRoot, { projectId: "once", files: [".env"] }, home);
+
+    await expect(runInitCommand(projectRoot, { projectId: "twice" }, home)).rejects.toThrow(
+      /already initialized — pass --yes/,
+    );
+    expect((await readManifest(projectRoot))!.projectId).toBe("once");
+
+    await runInitCommand(projectRoot, { projectId: "twice", yes: true, files: [".env"] }, home);
+    expect((await readManifest(projectRoot))!.projectId).toBe("twice");
+  });
+
+  it("aborts (nothing written) on a failed connection test", async () => {
+    projectRoot = await makeProject("badconn");
+    const config = await readGlobalConfig(home);
+    config.profiles["local-fs"] = {
+      backend: "local-fs",
+      settings: { basePath: join(home, "no", "such", "dir") },
+    };
+    await writeGlobalConfig(config, home);
+
+    await expect(runInitCommand(projectRoot, { projectId: "x" }, home)).rejects.toThrow(
+      /Connection test failed.*init aborted/s,
+    );
+    expect(await readManifest(projectRoot)).toBeNull();
+  });
+
+  it("validates --files paths all-or-nothing", async () => {
+    projectRoot = await makeProject("files-flag");
+
+    await expect(
+      runInitCommand(projectRoot, { projectId: "x", files: [".env,nope.txt"] }, home),
+    ).rejects.toThrow(/'nope.txt' does not exist.*Nothing was initialized/s);
+    expect(await readManifest(projectRoot)).toBeNull();
+  });
+
+  it("comma-splits and dedupes --files values, normalizes paths", async () => {
+    projectRoot = await makeProject("files-split");
+
+    await runInitCommand(
+      projectRoot,
+      { projectId: "x", files: [".env,local-notes.txt", "./.env"] },
+      home,
+    );
+
+    const manifest = await readManifest(projectRoot);
+    expect(manifest!.files.map((f) => f.path).sort()).toEqual([".env", "local-notes.txt"]);
+  });
+
+  it("emits JSON output", async () => {
+    projectRoot = await makeProject("json-init");
+
+    await runInitCommand(
+      projectRoot,
+      { projectId: "json-app", backend: "local-fs", files: [".env"], json: true },
+      home,
+    );
+
+    const raw = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .find((l) => l.trim().startsWith("{"));
+    expect(raw).toBeDefined();
+    expect(JSON.parse(raw as string)).toEqual({
+      projectId: "json-app",
+      backend: "local-fs",
+      files: [".env"],
+    });
+  });
+});
+
+describe("vsync init --list", () => {
+  it("prints candidates (suppressed filtered, boosted tagged) and writes nothing", async () => {
+    projectRoot = await makeProject("list");
+
+    await runInitCommand(projectRoot, { list: true }, home);
+
+    const out = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .join("\n");
+    expect(out).toContain(".env");
+    expect(out).toContain("suggested");
+    expect(out).toContain("local-notes.txt");
+    expect(out).not.toContain("node_modules");
+    expect(await readManifest(projectRoot)).toBeNull(); // works pre-init
+  });
+
+  it("emits candidates as JSON", async () => {
+    projectRoot = await makeProject("list-json");
+
+    await runInitCommand(projectRoot, { list: true, json: true }, home);
+
+    const raw = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .find((l) => l.trim().startsWith("{"));
+    expect(raw).toBeDefined();
+    const parsed = JSON.parse(raw as string) as {
+      candidates: { path: string; classification: string; rule?: string }[];
+    };
+    const env = parsed.candidates.find((c) => c.path === ".env");
+    expect(env?.classification).toBe("boosted");
+    expect(typeof env?.rule).toBe("string");
+    expect(parsed.candidates.some((c) => c.path.startsWith("node_modules/"))).toBe(false);
+  });
+});
+
 describe("vsync init — re-running on an initialized project", () => {
   it("warns and requires confirmation; abort leaves everything untouched", async () => {
     projectRoot = await makeProject("reinit");
     script("reinit-app", "local-fs", [".env"]);
-    await runInitCommand(projectRoot, home);
+    await runInitCommand(projectRoot, {}, home);
 
     const manifestBefore = await readFile(join(projectRoot, ".vsync", "manifest.json"), "utf8");
 
     vi.mocked(console.log).mockClear();
     script(false); // "Re-initialize anyway?" → no
-    await runInitCommand(projectRoot, home);
+    await runInitCommand(projectRoot, {}, home);
 
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("already initialized"));
     expect(console.log).toHaveBeenCalledWith("Aborted — nothing changed.");
@@ -200,10 +362,10 @@ describe("vsync init — re-running on an initialized project", () => {
   it("overwrites when the user confirms", async () => {
     projectRoot = await makeProject("overwrite");
     script("overwrite-app", "local-fs", [".env", "local-notes.txt"]);
-    await runInitCommand(projectRoot, home);
+    await runInitCommand(projectRoot, {}, home);
 
     script(true, "overwrite-app", "local-fs", []); // re-init, deselect everything
-    await runInitCommand(projectRoot, home);
+    await runInitCommand(projectRoot, {}, home);
 
     const manifest = await readManifest(projectRoot);
     expect(manifest!.files).toEqual([]);
