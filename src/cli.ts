@@ -9,6 +9,7 @@ import { runInitCommand } from "./commands/init.js";
 import { runRmCommand } from "./commands/rm.js";
 import { runDiffCommand } from "./commands/diff.js";
 import { runStatusCommand } from "./commands/status.js";
+import { runPushCommand } from "./commands/push.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -103,6 +104,19 @@ program
   .action(async (options: { showValues?: boolean }) => {
     try {
       await runDiffCommand(process.cwd(), options.showValues === true);
+    } catch (err) {
+      console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("push")
+  .description("Upload tracked files that changed since the last sync")
+  .option("-f, --force", "overwrite remote-only changes (local version wins)")
+  .action(async (options: { force?: boolean }) => {
+    try {
+      await runPushCommand(process.cwd(), options.force === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;

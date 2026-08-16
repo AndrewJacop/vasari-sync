@@ -25,6 +25,12 @@ export interface FileSyncState {
   status: LocalStatus;
   /** The backend's listing for this file, if one exists. */
   remoteFile?: RemoteFile;
+  /**
+   * Fresh local content hash (present whenever the local file exists) —
+   * push/pull stamp it into `lastSyncedHash` after a successful transfer
+   * instead of re-reading the file.
+   */
+  currentHash?: string;
 }
 
 /** Output sections in most-urgent-first order; empty sections are skipped. */
@@ -71,7 +77,12 @@ export async function computeFileSyncStates(
         // an existing remote copy still lands on conflict (safe default).
         (remoteFile.etagOrHash ?? entry.lastSyncedHash ?? entry.hash)
       : undefined;
-    states.push({ entry, status: detectConflict(current, remoteHash), remoteFile });
+    states.push({
+      entry,
+      status: detectConflict(current, remoteHash),
+      remoteFile,
+      currentHash: current.hash,
+    });
   }
   return states;
 }
