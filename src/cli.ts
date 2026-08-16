@@ -7,6 +7,7 @@ import { runAddCommand } from "./commands/add.js";
 import { runConfigCommand } from "./commands/config.js";
 import { runInitCommand } from "./commands/init.js";
 import { runRmCommand } from "./commands/rm.js";
+import { runStatusCommand } from "./commands/status.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +77,18 @@ program
   .action(async (paths: string[]) => {
     try {
       await runRmCommand(process.cwd(), paths);
+    } catch (err) {
+      console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("status")
+  .description("Show sync status of tracked files (paths and statuses only)")
+  .action(async () => {
+    try {
+      await runStatusCommand(process.cwd());
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
