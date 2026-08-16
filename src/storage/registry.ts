@@ -1,6 +1,7 @@
 import { LocalFsHandler, type LocalFsConfig } from "./handlers/local-fs.js";
 import { S3Handler, type S3Config } from "./handlers/s3.js";
 import { SftpHandler, type SftpConfig } from "./handlers/sftp.js";
+import { WebDavHandler, type WebDavConfig } from "./handlers/webdav.js";
 import type { BackendConfig, BackendFactory, StorageBackend } from "./types.js";
 
 /**
@@ -13,6 +14,7 @@ const registry: Record<string, BackendFactory> = {
   "local-fs": (config) => new LocalFsHandler(config as unknown as LocalFsConfig),
   s3: (config) => new S3Handler(config as unknown as S3Config),
   sftp: (config) => new SftpHandler(config as unknown as SftpConfig),
+  webdav: (config) => new WebDavHandler(config as unknown as WebDavConfig),
 };
 
 export function availableBackends(): string[] {
