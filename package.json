@@ -15,10 +15,30 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13.0"
   },
   "license": "MIT",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndrewJacop/vasari-sync.git"
+  },
+  "keywords": [
+    "cli",
+    "sync",
+    "dotfiles",
+    "env-files",
+    "secrets",
+    "backup",
+    "s3",
+    "sftp",
+    "webdav",
+    "github"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",
     "@inquirer/prompts": "^8.5.2",
