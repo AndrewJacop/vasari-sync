@@ -27,7 +27,8 @@ const h = vi.hoisted(() => {
     statError: null as Error | null,
   };
   // webdav-client maps HTTP >=400 to Errors carrying .status
-  const err = (message: string, code: number) => Object.assign(new Error(message), { status: code });
+  const err = (message: string, code: number) =>
+    Object.assign(new Error(message), { status: code });
   const parent = (p: string) => p.slice(0, p.lastIndexOf("/")) || "/";
   const LASTMOD = "Tue, 05 Apr 2016 14:39:18 GMT";
 
@@ -95,7 +96,9 @@ const h = vi.hoisted(() => {
   return { state, FakeDav, err };
 });
 
-vi.mock("webdav", () => ({ createClient: (url: string, options: unknown) => new h.FakeDav(url, options) }));
+vi.mock("webdav", () => ({
+  createClient: (url: string, options: unknown) => new h.FakeDav(url, options),
+}));
 
 const URL = "http://webdav.example.com/dav";
 const BASE = "/vsync";
@@ -168,9 +171,24 @@ describe("webdav handler (faked webdav client)", () => {
     const all = await handler.list();
     expect(all).toEqual([
       // sorted by key; quoted server etag stored bare; HTTP-date → ISO
-      { path: "a-dir/deep/b.txt", size: CONTENT.length, etagOrHash: "w-5", modifiedAt: "2016-04-05T14:39:18.000Z" },
-      { path: "some/nested/hello.txt", size: CONTENT.length, etagOrHash: "w-9", modifiedAt: "2016-04-05T14:39:18.000Z" },
-      { path: "zzz.txt", size: CONTENT.length, etagOrHash: "w-7", modifiedAt: "2016-04-05T14:39:18.000Z" },
+      {
+        path: "a-dir/deep/b.txt",
+        size: CONTENT.length,
+        etagOrHash: "w-5",
+        modifiedAt: "2016-04-05T14:39:18.000Z",
+      },
+      {
+        path: "some/nested/hello.txt",
+        size: CONTENT.length,
+        etagOrHash: "w-9",
+        modifiedAt: "2016-04-05T14:39:18.000Z",
+      },
+      {
+        path: "zzz.txt",
+        size: CONTENT.length,
+        etagOrHash: "w-7",
+        modifiedAt: "2016-04-05T14:39:18.000Z",
+      },
     ]);
 
     expect((await handler.list("some/")).map((f) => f.path)).toEqual(["some/nested/hello.txt"]);
