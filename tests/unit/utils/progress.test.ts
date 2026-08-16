@@ -1,6 +1,6 @@
 import { stderr } from "node:process";
 import { describe, expect, it, vi } from "vitest";
-import { Spinner } from "../../../src/utils/progress.js";
+import { Spinner, withSpinner } from "../../../src/utils/progress.js";
 
 describe("Spinner (non-TTY fallback)", () => {
   it("prints one plain line per new message, keeps frames off stdout", async () => {
@@ -45,5 +45,19 @@ describe("Spinner (TTY animation)", () => {
 
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+});
+
+describe("withSpinner", () => {
+  it("prints the progress line and rethrows when fn fails", async () => {
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((m) => lines.push(String(m)));
+
+    await expect(
+      withSpinner("Working", () => Promise.reject(new Error("boom"))),
+    ).rejects.toThrow("boom");
+
+    expect(lines.join("\n")).toContain("Working"); // progress line still printed
+    vi.restoreAllMocks();
   });
 });

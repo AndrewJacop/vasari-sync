@@ -3,6 +3,7 @@ import { readGlobalConfig, secretKey, setSecret, writeGlobalConfig } from "../co
 import { availableBackends, createBackend } from "../storage/registry.js";
 import type { BackendConfig } from "../storage/types.js";
 import { ghAuth } from "../utils/gh.js";
+import { withSpinner } from "../utils/progress.js";
 
 export interface ConfigCommandOptions {
   show?: boolean;
@@ -201,7 +202,9 @@ async function interactiveSetup(homeDir?: string): Promise<void> {
   }
 
   const backendConfig: BackendConfig = { ...settings, ...existingSecrets, ...newSecrets };
-  const result = await createBackend(backend, backendConfig).testConnection();
+  const result = await withSpinner("Testing connection", () =>
+    createBackend(backend, backendConfig).testConnection(),
+  );
   if (result.ok) {
     console.log(`Connection OK (${result.message ?? backend}).`);
   } else {

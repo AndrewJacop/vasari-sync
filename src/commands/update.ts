@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { confirm } from "@inquirer/prompts";
+import { withSpinner } from "../utils/progress.js";
 
 const PKG = "vasari-sync";
 
@@ -45,7 +46,9 @@ export async function runUpdateCommand(yes = false): Promise<void> {
   const current = runningVersion();
   let latest: string;
   try {
-    latest = (await npm(["view", PKG, "version"], 20_000)).trim();
+    latest = (
+      await withSpinner("Checking npm for updates", () => npm(["view", PKG, "version"], 20_000))
+    ).trim();
   } catch (err) {
     throw new Error(`could not reach the npm registry — ${(err as Error).message}`);
   }
@@ -63,7 +66,7 @@ export async function runUpdateCommand(yes = false): Promise<void> {
     }
   }
 
-  await npm(["install", "-g", `${PKG}@latest`], 300_000);
+  await withSpinner("Updating vasari-sync", () => npm(["install", "-g", `${PKG}@latest`], 300_000));
   console.log(`Updated vasari-sync ${current} → ${latest}.`);
   console.log("(the running session keeps the old version; new runs pick up the new one)");
 }

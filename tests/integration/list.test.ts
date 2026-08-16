@@ -118,7 +118,9 @@ describe("vsync list", () => {
     const out = await runList();
 
     expect(out).toContain("Known projects (1):");
-    expect(out).toMatch(/OPTOLINK\s+local-fs\s+2 files\s+not linked here — run `vsync link OPTOLINK`/);
+    expect(out).toMatch(
+      /OPTOLINK\s+local-fs\s+2 files\s+not linked here — run `vsync link OPTOLINK`/,
+    );
     expect(out).not.toContain("never synced");
   });
 
@@ -130,7 +132,12 @@ describe("vsync list", () => {
     await writeFile(join(broken, "ghosted", ".env"), "A=1");
     await rm(broken, { recursive: true, force: true }); // basePath now nonexistent
     await writeRegistry([
-      { projectId: "alpha", path: projectA, backend: "local-fs", lastSyncedAt: "2026-08-15T10:22:00.000Z" },
+      {
+        projectId: "alpha",
+        path: projectA,
+        backend: "local-fs",
+        lastSyncedAt: "2026-08-15T10:22:00.000Z",
+      },
     ]);
     const config = await readGlobalConfig(homeDir);
     config.profiles["local-fs"] = { backend: "local-fs", settings: { basePath: broken } };
@@ -186,7 +193,12 @@ describe("vsync list", () => {
     await mkdir(join(remoteDir, "alpha"), { recursive: true });
     await writeFile(join(remoteDir, "alpha", ".env"), "A=1");
     await writeRegistry([
-      { projectId: "alpha", path: projectA, backend: "local-fs", lastSyncedAt: "2026-08-16T09:00:00.000Z" },
+      {
+        projectId: "alpha",
+        path: projectA,
+        backend: "local-fs",
+        lastSyncedAt: "2026-08-16T09:00:00.000Z",
+      },
     ]);
     const config = await readGlobalConfig(homeDir);
     config.profiles["local-fs"] = { backend: "local-fs", settings: { basePath: remoteDir } };

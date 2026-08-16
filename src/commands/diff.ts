@@ -7,6 +7,7 @@ import { scanCandidates } from "../core/candidateScanner.js";
 import { readManifest, type Manifest } from "../core/manifest.js";
 import { computeFileSyncStates, STATUS_SECTIONS } from "../core/syncState.js";
 import { remoteKeyFor } from "../utils/paths.js";
+import { withSpinner } from "../utils/progress.js";
 
 /**
  * `vsync diff` — tracked-file differences (paths only by default) plus an
@@ -86,7 +87,9 @@ async function showContentDiffs(
       const remoteCopy = join(scratch, entry.path.replace(/\//g, "_"));
       let remoteText: string | null = null;
       try {
-        await backend.pull(remoteKeyFor(projectId, entry.path), remoteCopy);
+        await withSpinner(`Fetching remote copy of ${entry.path}`, () =>
+          backend.pull(remoteKeyFor(projectId, entry.path), remoteCopy),
+        );
         remoteText = await readFile(remoteCopy, "utf8");
       } catch (err) {
         console.log(

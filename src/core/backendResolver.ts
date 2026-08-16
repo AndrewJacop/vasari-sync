@@ -1,5 +1,6 @@
 import { createBackend } from "../storage/registry.js";
 import type { BackendConfig, StorageBackend } from "../storage/types.js";
+import { withSpinner } from "../utils/progress.js";
 import { readGlobalConfig, type GlobalConfig } from "./globalConfig.js";
 import { readManifest } from "./manifest.js";
 
@@ -18,10 +19,21 @@ export function createBackendFromProfile(
       secrets[key.slice(backendName.length + 1)] = value;
     }
   }
-  return createBackend(backendName, {
-    ...(profile?.settings ?? {}),
-    ...secrets,
-  } as BackendConfig);
+  return withListingSpinner(
+    createBackend(backendName, {
+      ...(profile?.settings ?? {}),
+      ...secrets,
+    } as BackendConfig),
+  );
+}
+
+/** Every remote listing gets a spinner — the one slow call shared by
+ * status/diff/push/pull/link/list (a github-repo listing is several API
+ * round-trips). Own-property assignment shadows the class prototype. */
+function withListingSpinner(backend: StorageBackend): StorageBackend {
+  const rawList = backend.list.bind(backend);
+  backend.list = (prefix?: string) => withSpinner("Listing remote files", () => rawList(prefix));
+  return backend;
 }
 
 /**

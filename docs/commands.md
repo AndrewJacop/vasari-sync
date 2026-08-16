@@ -14,6 +14,9 @@ Conventions used below:
 - On failure the CLI prints `[vsync] <message>` to stderr and exits `1`.
 - Paths in all output are project-relative and forward-slashed, even on
   Windows.
+- Any potentially slow remote step (backend listings, connection tests,
+  per-file transfers) shows a spinner naming what's happening; piped/CI
+  output prints one plain progress line per step instead.
 
 Contents: [config](#vsync-config) · [init](#vsync-init) · [add](#vsync-add) ·
 [rm](#vsync-rm) · [status](#vsync-status) · [diff](#vsync-diff) ·

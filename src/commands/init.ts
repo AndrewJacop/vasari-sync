@@ -8,6 +8,7 @@ import { readManifest, writeManifest, type ManifestFileEntry } from "../core/man
 import { availableBackends, createBackend } from "../storage/registry.js";
 import type { BackendConfig } from "../storage/types.js";
 import { validateProjectId, ensureVsyncIgnored } from "../utils/paths.js";
+import { withSpinner } from "../utils/progress.js";
 import { treeCheckbox } from "../utils/treeCheckbox.js";
 
 /**
@@ -72,10 +73,12 @@ export async function runInitCommand(projectRoot: string, homeDir?: string): Pro
   for (const [key, value] of Object.entries(globalConfig.secrets)) {
     if (key.startsWith(`${backend}/`)) secrets[key.slice(backend.length + 1)] = value;
   }
-  const connection = await createBackend(backend, {
-    ...profile.settings,
-    ...secrets,
-  } as BackendConfig).testConnection();
+  const connection = await withSpinner("Testing connection", () =>
+    createBackend(backend, {
+      ...profile.settings,
+      ...secrets,
+    } as BackendConfig).testConnection(),
+  );
   if (connection.ok) {
     console.log(`Connection OK (${connection.message ?? backend}).`);
   } else {

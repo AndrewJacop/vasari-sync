@@ -57,3 +57,15 @@ export class Spinner {
     if (this.isTty) process.stderr.write("\r\u001b[K"); // clear the line
   }
 }
+
+/** Runs `fn` under a spinner showing `message`. Always stops the spinner,
+ * even when `fn` rejects — call sites stay one line each. */
+export async function withSpinner<T>(message: string, fn: () => Promise<T>): Promise<T> {
+  const spinner = new Spinner();
+  spinner.start(message);
+  try {
+    return await fn();
+  } finally {
+    spinner.stop();
+  }
+}
