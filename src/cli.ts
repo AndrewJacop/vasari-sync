@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { runConfigCommand } from "./commands/config.js";
+import { runInitCommand } from "./commands/init.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +36,18 @@ program
   .action(async (options) => {
     try {
       await runConfigCommand(options);
+    } catch (err) {
+      console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("init")
+  .description("Set up this project: pick files to track and a storage backend (interactive)")
+  .action(async () => {
+    try {
+      await runInitCommand(process.cwd());
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
