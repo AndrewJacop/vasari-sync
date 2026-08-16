@@ -21,6 +21,7 @@
   "private": true,
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",
+    "@inquirer/prompts": "^8.5.2",
     "@octokit/rest": "^22.0.1",
     "commander": "^15.0.0",
     "ssh2-sftp-client": "^12.1.1",
