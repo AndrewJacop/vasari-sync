@@ -8,7 +8,11 @@ import {
 } from "../../../src/utils/treeCheckbox.js";
 
 /** Minimal candidate helper — only what the tree uses. */
-function cand(path: string, classification: Candidate["classification"], nestedRepo?: string): Candidate {
+function cand(
+  path: string,
+  classification: Candidate["classification"],
+  nestedRepo?: string,
+): Candidate {
   return { path, size: 10, classification, rule: "", ...(nestedRepo ? { nestedRepo } : {}) };
 }
 
@@ -60,15 +64,14 @@ describe("visibleRows", () => {
       "local-notes.txt",
     ]);
     const collapsed = visibleRows(tree, new Set(["optolink-backend"]));
-    expect(collapsed.map((r) => r.node.path)).toEqual([
-      "optolink-backend",
-      "local-notes.txt",
-    ]);
+    expect(collapsed.map((r) => r.node.path)).toEqual(["optolink-backend", "local-notes.txt"]);
   });
 
   it("tracks depth per row", () => {
     const rows = visibleRows(buildTree(candidates), new Set());
-    expect(rows.find((r) => r.node.path === "optolink-backend/deep/settings.local.json")?.depth).toBe(2);
+    expect(
+      rows.find((r) => r.node.path === "optolink-backend/deep/settings.local.json")?.depth,
+    ).toBe(2);
   });
 });
 
@@ -82,13 +85,13 @@ describe("selection model", () => {
   const map = byPath(candidates);
 
   it("subtreeFilePaths lists every file path below a node", () => {
-    expect(subtreeFilePaths(tree).sort()).toEqual(
-      [...map.keys()].sort(),
-    );
+    expect(subtreeFilePaths(tree).sort()).toEqual([...map.keys()].sort());
     const repoNode = tree.children[0];
-    expect(subtreeFilePaths(repoNode).sort()).toEqual(
-      ["repo/.env", "repo/CLAUDE.md", "repo/inner/notes.txt"],
-    );
+    expect(subtreeFilePaths(repoNode).sort()).toEqual([
+      "repo/.env",
+      "repo/CLAUDE.md",
+      "repo/inner/notes.txt",
+    ]);
   });
 
   it("folderCheckState derives none/some/all from the selection", () => {
@@ -96,10 +99,7 @@ describe("selection model", () => {
     expect(folderCheckState(repoNode, new Set())).toBe("none");
     expect(folderCheckState(repoNode, new Set(["repo/.env"]))).toBe("some");
     expect(
-      folderCheckState(
-        repoNode,
-        new Set(["repo/.env", "repo/CLAUDE.md", "repo/inner/notes.txt"]),
-      ),
+      folderCheckState(repoNode, new Set(["repo/.env", "repo/CLAUDE.md", "repo/inner/notes.txt"])),
     ).toBe("all");
   });
 });

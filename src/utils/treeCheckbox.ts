@@ -45,9 +45,7 @@ export interface VisibleRow {
 /** Builds the candidate tree. Folders-first sort; repo folders tagged. */
 export function buildTree(candidates: Candidate[]): TreeNode {
   const root: TreeNode = { name: "", path: "", children: [], repoFolder: false };
-  const repoRoots = new Set(
-    candidates.flatMap((c) => (c.nestedRepo ? [c.nestedRepo] : [])),
-  );
+  const repoRoots = new Set(candidates.flatMap((c) => (c.nestedRepo ? [c.nestedRepo] : [])));
 
   for (const c of candidates) {
     const segments = c.path.split("/");
@@ -55,7 +53,12 @@ export function buildTree(candidates: Candidate[]): TreeNode {
     for (const seg of segments.slice(0, -1)) {
       let child = node.children.find((n) => n.name === seg && !n.file);
       if (!child) {
-        child = { name: seg, path: node.path ? `${node.path}/${seg}` : seg, children: [], repoFolder: false };
+        child = {
+          name: seg,
+          path: node.path ? `${node.path}/${seg}` : seg,
+          children: [],
+          repoFolder: false,
+        };
         node.children.push(child);
       }
       node = child;
@@ -117,9 +120,7 @@ export function visibleRows(root: TreeNode, collapsed: ReadonlySet<string>): Vis
 
 function allFolderPaths(node: TreeNode): string[] {
   if (node.file) return [];
-  return node.children.flatMap((c) =>
-    c.file ? [] : [c.path, ...allFolderPaths(c)],
-  );
+  return node.children.flatMap((c) => (c.file ? [] : [c.path, ...allFolderPaths(c)]));
 }
 
 /** Code-unit ordering shared by folder/file sorts (locale-stable). */
@@ -162,7 +163,12 @@ function renderFolderRow(
   return `${marker}${indent}${glyph} ${folderGlyph(node, selected)} ${name}${annotation}`;
 }
 
-function renderFileRow(node: TreeNode, depth: number, isActive: boolean, selected: ReadonlySet<string>): string {
+function renderFileRow(
+  node: TreeNode,
+  depth: number,
+  isActive: boolean,
+  selected: ReadonlySet<string>,
+): string {
   const file = node.file as Candidate; // guarded: only file nodes reach here
   const marker = isActive ? styleText("bold", "❯ ") : "  ";
   const indent = "│  ".repeat(depth);

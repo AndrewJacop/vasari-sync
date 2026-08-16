@@ -4,6 +4,7 @@ import { resolveBackend } from "../core/backendResolver.js";
 import { readGlobalConfig, upsertProjectEntry, writeGlobalConfig } from "../core/globalConfig.js";
 import { readManifest, writeManifest } from "../core/manifest.js";
 import { computeFileSyncStates, type FileSyncState } from "../core/syncState.js";
+import { Spinner } from "../utils/progress.js";
 import { remoteKeyFor } from "../utils/paths.js";
 
 /**
@@ -26,7 +27,7 @@ import { remoteKeyFor } from "../utils/paths.js";
  * the end, only if anything changed.
  */
 
-export type PushOutcome =
+type PushOutcome =
   "pushed" | "skipped-unchanged" | "conflicted" | "needs-pull" | "missing-locally" | "failed";
 
 /** Per-file line: actionable, states exactly why a file wasn't pushed. */
@@ -96,6 +97,7 @@ export async function runPushCommand(
 
   const results: PushResult[] = [];
   const syncedAt = new Date().toISOString();
+  const spinner = new Spinner();
   let dirty = false;
 
   for (const state of states) {
@@ -118,6 +120,7 @@ export async function runPushCommand(
     }
     try {
       const abs = join(projectRoot, entry.path);
+      spinner.start(`Uploading ${entry.path} (${entry.size} B)`);
       await backend.push(abs, remoteKeyFor(manifest.projectId, entry.path));
       // currentHash is always set here: computeFileSyncStates hashed this
       // file successfully moments ago (it wasn't missing-locally).
@@ -138,6 +141,8 @@ export async function runPushCommand(
       });
     }
   }
+
+  spinner.stop();
 
   if (dirty) {
     await writeManifest(projectRoot, manifest);

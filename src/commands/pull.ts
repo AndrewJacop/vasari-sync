@@ -5,6 +5,7 @@ import { readGlobalConfig, upsertProjectEntry, writeGlobalConfig } from "../core
 import { hashFile } from "../core/hash.js";
 import { readManifest, writeManifest } from "../core/manifest.js";
 import { computeFileSyncStates, type FileSyncState } from "../core/syncState.js";
+import { Spinner } from "../utils/progress.js";
 import { remoteKeyFor } from "../utils/paths.js";
 
 /**
@@ -33,7 +34,7 @@ import { remoteKeyFor } from "../utils/paths.js";
  * all-or-nothing.
  */
 
-export type PullOutcome =
+type PullOutcome =
   "pulled" | "skipped-unchanged" | "conflicted" | "needs-push" | "missing-remotely" | "failed";
 
 /** Per-file line: actionable, states exactly why a file wasn't pulled. */
@@ -103,12 +104,14 @@ export async function runPullCommand(
 
   const results: PullResult[] = [];
   const syncedAt = new Date().toISOString();
+  const spinner = new Spinner();
   let dirty = false;
 
   const attemptPull = async (state: FileSyncState, note?: string): Promise<void> => {
     const { entry } = state;
     const abs = join(projectRoot, entry.path);
     try {
+      spinner.start(`Downloading ${entry.path}…`);
       await backend.pull(remoteKeyFor(manifest.projectId, entry.path), abs);
       const content = await hashFile(abs);
       const info = await stat(abs);
@@ -169,6 +172,8 @@ export async function runPullCommand(
     }
     await attemptPull(state);
   }
+
+  spinner.stop();
 
   if (dirty) {
     await writeManifest(projectRoot, manifest);

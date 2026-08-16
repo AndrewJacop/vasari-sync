@@ -142,7 +142,8 @@ const MAX_NESTED_REPO_DEPTH = 8;
 export async function scanCandidates(projectRoot: string): Promise<Candidate[]> {
   const candidates = await scanRepo(projectRoot, "", undefined, 0);
   candidates.sort(
-    (a, b) => CLASS_RANK[a.classification] - CLASS_RANK[b.classification] || cmpPaths(a.path, b.path),
+    (a, b) =>
+      CLASS_RANK[a.classification] - CLASS_RANK[b.classification] || cmpPaths(a.path, b.path),
   );
   return candidates;
 }

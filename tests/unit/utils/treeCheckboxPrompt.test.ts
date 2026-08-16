@@ -5,9 +5,21 @@ import { treeCheckbox } from "../../../src/utils/treeCheckbox.js";
 
 /** OPTOLINK-shaped fixture: two nested repos + a parent-level file. */
 const candidates: Candidate[] = [
-  { path: "optolink-backend/.env", size: 412, classification: "boosted", rule: "pattern:.env*", nestedRepo: "optolink-backend" },
+  {
+    path: "optolink-backend/.env",
+    size: 412,
+    classification: "boosted",
+    rule: "pattern:.env*",
+    nestedRepo: "optolink-backend",
+  },
   { path: "optolink-backend/CLAUDE.md", size: 2100, classification: "shown", rule: "" },
-  { path: "optolink-portal/.env", size: 182, classification: "boosted", rule: "pattern:.env*", nestedRepo: "optolink-portal" },
+  {
+    path: "optolink-portal/.env",
+    size: 182,
+    classification: "boosted",
+    rule: "pattern:.env*",
+    nestedRepo: "optolink-portal",
+  },
   { path: "local-notes.txt", size: 40, classification: "shown", rule: "" },
 ];
 
