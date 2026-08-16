@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import { runAddCommand } from "./commands/add.js";
 import { runConfigCommand } from "./commands/config.js";
 import { runInitCommand } from "./commands/init.js";
+import { runRmCommand } from "./commands/rm.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -48,6 +50,32 @@ program
   .action(async () => {
     try {
       await runInitCommand(process.cwd());
+    } catch (err) {
+      console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("add")
+  .description("Track file(s) for syncing (manifest only — nothing is uploaded)")
+  .argument("<path...>", "file path(s) inside the project")
+  .action(async (paths: string[]) => {
+    try {
+      await runAddCommand(process.cwd(), paths);
+    } catch (err) {
+      console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("rm")
+  .description("Stop tracking file(s) — local files are NOT deleted")
+  .argument("<path...>", "tracked file path(s)")
+  .action(async (paths: string[]) => {
+    try {
+      await runRmCommand(process.cwd(), paths);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
