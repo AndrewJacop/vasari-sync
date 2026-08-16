@@ -263,6 +263,73 @@ describe("scanCandidates — edge cases", () => {
   });
 });
 
+describe("scanCandidates — ignored nested git repos", () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await makeRepo("nestedrepo");
+    // Parent ignores the whole sub-repo directory (the umbrella pattern).
+    await writeFile(join(root, ".gitignore"), "/sub/\n/plain\n");
+    await writeFile(join(root, "plain"), "p");
+
+    // sub is its own git repo with its OWN .gitignore deciding candidates.
+    const sub = join(root, "sub");
+    await mkdir(sub, { recursive: true });
+    await execFileAsync("git", ["init", "-q"], { cwd: sub });
+    await writeFile(join(sub, ".gitignore"), ".env\nCLAUDE.md\n");
+    await writeFile(join(sub, ".env"), "A=1");
+    await writeFile(join(sub, "CLAUDE.md"), "# x");
+    await writeFile(join(sub, "README.md"), "tracked inside sub");
+    await execFileAsync("git", ["add", "README.md"], { cwd: sub });
+    await execFileAsync(
+      "git",
+      ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"],
+      { cwd: sub },
+    );
+  });
+
+  it("surfaces sub-repo files under the parent path, tagged with the repo root", async () => {
+    const result = await scanCandidates(root);
+    expect(result.find((c) => c.path === "sub/.env")).toMatchObject({
+      classification: "boosted",
+      rule: "pattern:.env*",
+      nestedRepo: "sub",
+    });
+    expect(result.find((c) => c.path === "sub/CLAUDE.md")).toMatchObject({
+      classification: "shown",
+      nestedRepo: "sub",
+    });
+  });
+
+  it("never surfaces the collapsed dir entry itself as a fake file", async () => {
+    const result = await scanCandidates(root);
+    expect(result.find((c) => c.path === "sub")).toBeUndefined();
+  });
+
+  it("respects the sub-repo's own tracking: its README is not a candidate", async () => {
+    const result = await scanCandidates(root);
+    expect(result.find((c) => c.path === "sub/README.md")).toBeUndefined();
+  });
+
+  it("leaves top-level candidates untagged", async () => {
+    const result = await scanCandidates(root);
+    expect(result.find((c) => c.path === "plain")?.nestedRepo).toBeUndefined();
+  });
+
+  it("does not descend into a non-ignored nested repo (tracked submodule)", async () => {
+    const other = await makeRepo("submodule");
+    const sub = join(other, "sub");
+    await mkdir(sub, { recursive: true });
+    await execFileAsync("git", ["init", "-q"], { cwd: sub });
+    await writeFile(join(sub, ".gitignore"), ".env\n");
+    await writeFile(join(sub, ".env"), "A=1");
+    // .env is ignored only by the inner repo; the parent tracks nothing and
+    // does not ignore sub/ — untracked + not ignored = never a candidate.
+    const result = await scanCandidates(other);
+    expect(result.filter((c) => c.path.startsWith("sub/"))).toEqual([]);
+  });
+});
+
 describe("suppress dir coverage", () => {
   it("suppresses a file under every SUPPRESS_DIR_NAMES entry", async () => {
     const root = await makeRepo("dirs");

@@ -1,4 +1,4 @@
-import { checkbox, confirm, input, select } from "@inquirer/prompts";
+import { confirm, input, select } from "@inquirer/prompts";
 import { stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { scanCandidates } from "../core/candidateScanner.js";
@@ -8,6 +8,7 @@ import { readManifest, writeManifest, type ManifestFileEntry } from "../core/man
 import { availableBackends, createBackend } from "../storage/registry.js";
 import type { BackendConfig } from "../storage/types.js";
 import { validateProjectId, ensureVsyncIgnored } from "../utils/paths.js";
+import { treeCheckbox } from "../utils/treeCheckbox.js";
 
 /**
  * `vsync init` — first-time setup in a project: pick a project ID and
@@ -88,21 +89,17 @@ export async function runInitCommand(projectRoot: string, homeDir?: string): Pro
     }
   }
 
-  // Suppressed candidates never reach the prompt; boosted arrive first and
-  // pre-checked (scanCandidates' contract).
-  const candidates = (await scanCandidates(projectRoot)).filter(
-    (c) => c.classification !== "suppressed",
-  );
+  // Suppressed candidates never reach the prompt; boosted arrive pre-checked
+  // (scanCandidates' contract). Tree prompt: folders toggle whole subtrees,
+  // nested-repo folders are tagged (see candidateScanner).
+  const allCandidates = await scanCandidates(projectRoot);
+  const candidates = allCandidates.filter((c) => c.classification !== "suppressed");
   const selected: string[] =
     candidates.length === 0
       ? []
-      : await checkbox({
-          message: "Files to track (suggested files are pre-checked)",
-          choices: candidates.map((c) => ({
-            value: c.path,
-            name: `${c.path} (${c.size} bytes)${c.rule ? ` — matched ${c.rule}` : ""}`,
-            checked: c.classification === "boosted",
-          })),
+      : await treeCheckbox({
+          message: "Files to track",
+          candidates,
         });
 
   const files: ManifestFileEntry[] = [];

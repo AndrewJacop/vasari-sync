@@ -28,6 +28,13 @@ export interface Candidate {
    * `size:>10MB`. Empty string for plain shown-unchecked files.
    */
   rule: string;
+  /**
+   * Set only for candidates found inside a nested git repo (a directory
+   * the outer repo ignores that carries its own `.git`): the repo-root-
+   * relative path of that nested repo, e.g. `optolink-backend`. Lets the
+   * init tree prompt tag repo folders without touching the filesystem.
+   */
+  nestedRepo?: string;
 }
 
 /** Basename patterns marking a file as likely sync-worthy. Case-insensitive. */
@@ -92,6 +99,12 @@ const CLASS_RANK: Record<CandidateClassification, number> = {
  * suppressed (alphabetical by path within each group) — ready for the
  * init prompt as-is.
  *
+ * Directories the outer repo ignores that carry their own `.git` (nested
+ * repos, handled from inside themselves) are scanned recursively as part
+ * of the umbrella project: the nested repo's own .gitignore decides what
+ * is a candidate, and paths are prefixed so the manifest stays
+ * project-root-relative.
+ *
  * Suppressed-by-directory entries carry `size: 0` on purpose: we never
  * stat them, so a 30k-file node_modules costs only porcelain output, not
  * 30k syscalls.
@@ -100,22 +113,67 @@ const CLASS_RANK: Record<CandidateClassification, number> = {
  * git repository — vsync's candidate model is gitignore-based, so there
  * is nothing meaningful to scan without git.
  */
+/**
+ * Code-unit path ordering (deterministic across machines/locales).
+ */
+function cmpPaths(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A collapsed `!! dir/` porcelain entry means git refused to descend —
+ * which (with --untracked-files=all) happens exactly when the directory
+ * carries its own `.git`. The cap keeps a pathological self-symlinked
+ * repo from looping.
+ */
+const MAX_NESTED_REPO_DEPTH = 8;
+
 export async function scanCandidates(projectRoot: string): Promise<Candidate[]> {
+  const candidates = await scanRepo(projectRoot, "", undefined, 0);
+  candidates.sort(
+    (a, b) => CLASS_RANK[a.classification] - CLASS_RANK[b.classification] || cmpPaths(a.path, b.path),
+  );
+  return candidates;
+}
+
+/**
+ * One `git status --ignored` pass over a single repo. `prefix` makes
+ * nested-repo paths project-root-relative; `repoRoot` (undefined at the
+ * top level) tags candidates with the nested repo they came from.
+ */
+async function scanRepo(
+  repoRootPath: string,
+  prefix: string,
+  repoRoot: string | undefined,
+  depth: number,
+): Promise<Candidate[]> {
   // -z: NUL-separated, unquoted paths (spaces/parens safe).
   // --untracked-files=all: expands ignored directories into individual
   // files, so per-file size/pattern rules actually see every file.
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync(
+    const res = await execFileAsync(
       "git",
       ["status", "--porcelain", "--ignored", "--untracked-files=all", "-z"],
       // A fully expanded node_modules can produce megabytes of porcelain.
-      { cwd: projectRoot, maxBuffer: 128 * 1024 * 1024 },
-    ));
+      { cwd: repoRootPath, maxBuffer: 128 * 1024 * 1024 },
+    );
+    stdout = res.stdout;
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     throw new Error(
-      `Cannot scan candidates in '${projectRoot}': git status failed — ` +
+      `Cannot scan candidates in '${repoRootPath}': git status failed — ` +
         `is this a git repository, and is git installed? (${(e.stderr ?? e.message ?? "").trim()})`,
     );
   }
@@ -123,29 +181,45 @@ export async function scanCandidates(projectRoot: string): Promise<Candidate[]> 
   const candidates: Candidate[] = [];
   for (const entry of stdout.split("\0")) {
     if (!entry.startsWith("!! ")) continue; // only ignored files are candidates
-    let path = entry.slice(3);
-    if (!path || path === "/") continue;
-    if (path.endsWith("/")) path = path.slice(0, -1); // defensive: collapsed dir entry
+    const path = entry.slice(3);
+    if (!path) continue;
+
+    // A trailing slash is git's "I refused to descend" marker: with
+    // --untracked-files=all that only happens for directories carrying
+    // their own .git (nested repo) or a dir git offers nothing for. Scan
+    // into the former; never surface the collapsed entry as a fake file.
+    if (path.endsWith("/")) {
+      const dir = path.slice(0, -1);
+      if ((await exists(join(repoRootPath, dir, ".git"))) && depth < MAX_NESTED_REPO_DEPTH) {
+        const nestedPrefix = prefix + dir + "/";
+        candidates.push(
+          ...(await scanRepo(join(repoRootPath, dir), nestedPrefix, prefix + dir, depth + 1)),
+        );
+      }
+      continue;
+    }
 
     const segments = path.split("/");
-    const basename = segments[segments.length - 1];
+    const basename = segments.at(-1) ?? "";
     const dirSegments = segments.slice(0, -1);
 
     // Directory suppression first: no stat needed, cheap and total.
     const suppressedDir = dirSegments.find((s) => SUPPRESS_DIR_SET.has(s));
     if (suppressedDir) {
       candidates.push({
-        path,
+        path: prefix + path,
         size: 0,
         classification: "suppressed",
         rule: `dir:${suppressedDir}`,
+        ...(repoRoot ? { nestedRepo: repoRoot } : {}),
       });
       continue;
     }
 
     let size: number;
     try {
-      size = (await stat(join(projectRoot, path))).size;
+      const info = await stat(join(repoRootPath, path));
+      size = info.size;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // vanished mid-scan — skip
       throw err;
@@ -153,27 +227,35 @@ export async function scanCandidates(projectRoot: string): Promise<Candidate[]> 
 
     if (size > SUPPRESS_MAX_BYTES) {
       candidates.push({
-        path,
+        path: prefix + path,
         size,
         classification: "suppressed",
         rule: `size:>${Math.round(SUPPRESS_MAX_BYTES / 1024 / 1024)}MB`,
+        ...(repoRoot ? { nestedRepo: repoRoot } : {}),
       });
       continue;
     }
 
     const boostHit = BOOST_FILENAME_PATTERNS.find(({ re }) => re.test(basename));
     if (boostHit && size <= BOOST_MAX_BYTES) {
-      candidates.push({ path, size, classification: "boosted", rule: `pattern:${boostHit.name}` });
+      candidates.push({
+        path: prefix + path,
+        size,
+        classification: "boosted",
+        rule: `pattern:${boostHit.name}`,
+        ...(repoRoot ? { nestedRepo: repoRoot } : {}),
+      });
     } else {
       // Includes boost-pattern names that are too big to trust as config.
-      candidates.push({ path, size, classification: "shown", rule: "" });
+      candidates.push({
+        path: prefix + path,
+        size,
+        classification: "shown",
+        rule: "",
+        ...(repoRoot ? { nestedRepo: repoRoot } : {}),
+      });
     }
   }
 
-  candidates.sort(
-    (a, b) =>
-      CLASS_RANK[a.classification] - CLASS_RANK[b.classification] ||
-      (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
-  );
   return candidates;
 }

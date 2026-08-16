@@ -22,8 +22,10 @@ const q = vi.hoisted(() => ({ answers: [] as unknown[] }));
 vi.mock("@inquirer/prompts", () => ({
   input: vi.fn(async () => q.answers.shift()),
   select: vi.fn(async () => q.answers.shift()),
-  checkbox: vi.fn(async () => q.answers.shift()),
   confirm: vi.fn(async () => q.answers.shift()),
+}));
+vi.mock("../../src/utils/treeCheckbox.js", () => ({
+  treeCheckbox: vi.fn(async () => q.answers.shift()),
 }));
 
 import { runAddCommand } from "../../src/commands/add.js";
@@ -110,7 +112,7 @@ describe("vsync end-to-end — a full user session on local-fs", () => {
       );
 
       // ── init: pick the project id, backend, and starting files ───────
-      // Prompt order: projectId input → backend select → files checkbox.
+      // Prompt order: projectId input → backend select → files tree prompt.
       // extra.key is boosted/pre-checked but deliberately left unselected
       // here — the user adds it later via `vsync add`.
       q.answers = ["demo-app", "local-fs", [".env", "local-notes.txt"]];

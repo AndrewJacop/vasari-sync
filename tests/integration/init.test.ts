@@ -15,12 +15,16 @@ const q = vi.hoisted(() => ({ answers: [] as unknown[] }));
 vi.mock("@inquirer/prompts", () => ({
   input: vi.fn(async () => q.answers.shift()),
   select: vi.fn(async () => q.answers.shift()),
-  checkbox: vi.fn(async () => q.answers.shift()),
   confirm: vi.fn(async () => q.answers.shift()),
 }));
 
-import { checkbox, input } from "@inquirer/prompts";
+vi.mock("../../src/utils/treeCheckbox.js", () => ({
+  treeCheckbox: vi.fn(async () => q.answers.shift()),
+}));
+
+import { input } from "@inquirer/prompts";
 import { runInitCommand } from "../../src/commands/init.js";
+import { treeCheckbox } from "../../src/utils/treeCheckbox.js";
 import { hashFile } from "../../src/core/hash.js";
 import { readGlobalConfig, writeGlobalConfig } from "../../src/core/globalConfig.js";
 import { readManifest } from "../../src/core/manifest.js";
@@ -117,7 +121,7 @@ describe("vsync init — first run", () => {
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining("run `vsync push`"));
   });
 
-  it("defaults projectId to the folder name and shows the checkbox with boosted pre-checked", async () => {
+  it("defaults projectId to the folder name and passes candidates to the tree prompt", async () => {
     projectRoot = await makeProject("default-id");
     const defaultId = basename(projectRoot);
     script(defaultId, "local-fs", []);
@@ -125,18 +129,14 @@ describe("vsync init — first run", () => {
     await runInitCommand(projectRoot, home);
 
     expect(vi.mocked(input)).toHaveBeenCalledWith(expect.objectContaining({ default: defaultId }));
-    expect(vi.mocked(checkbox)).toHaveBeenCalledTimes(1);
-    const choices = vi.mocked(checkbox).mock.calls[0][0].choices as Array<{
-      value: string;
-      checked: boolean;
-      name: string;
-    }>;
-    const env = choices.find((c) => c.value === ".env");
-    const notes = choices.find((c) => c.value === "local-notes.txt");
-    expect(env?.checked).toBe(true); // boosted → pre-checked
-    expect(notes?.checked).toBe(false); // plain → unchecked
-    // Boosted sorted to the top, suppressed node_modules never shown.
-    expect(choices.map((c) => c.value)).toEqual([".env", "local-notes.txt"]);
+    expect(vi.mocked(treeCheckbox)).toHaveBeenCalledTimes(1);
+    const { candidates } = vi.mocked(treeCheckbox).mock.calls[0][0];
+    const env = candidates.find((c) => c.path === ".env");
+    const notes = candidates.find((c) => c.path === "local-notes.txt");
+    expect(env?.classification).toBe("boosted"); // pre-checked inside the prompt
+    expect(notes?.classification).toBe("shown");
+    // Suppressed node_modules never reaches the prompt.
+    expect(candidates.some((c) => c.path.startsWith("node_modules/"))).toBe(false);
   });
 
   it("only tracks checkbox-selected files, not every candidate", async () => {
@@ -157,7 +157,7 @@ describe("vsync init — first run", () => {
 
     await runInitCommand(projectRoot, home);
 
-    expect(vi.mocked(checkbox)).not.toHaveBeenCalled();
+    expect(vi.mocked(treeCheckbox)).not.toHaveBeenCalled();
     const manifest = await readManifest(projectRoot);
     expect(manifest!.files).toEqual([]);
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining("No files tracked yet"));

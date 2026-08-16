@@ -49,6 +49,7 @@
     "webdav": "^5.10.0"
   },
   "devDependencies": {
+    "@inquirer/testing": "^3.3.9",
     "@types/diff": "^5.2.3",
     "@types/node": "^26.2.0",
     "@types/ssh2-sftp-client": "^9.0.6",
