@@ -4,14 +4,21 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashFile } from "../../../src/core/hash.js";
 import { availableBackends, createBackend } from "../../../src/storage/registry.js";
-import type { StorageBackend } from "../../../src/storage/types.js";
+import type { BackendConfig, StorageBackend } from "../../../src/storage/types.js";
 
 let storageDir: string;
 let workDir: string;
 
+/** Minimal valid config per backend, for the structural interface check. */
+const MINIMAL_CONFIG: Record<string, BackendConfig> = {
+  "local-fs": { basePath: () => storageDir }, // replaced in beforeAll
+  s3: { region: "us-east-1", bucket: "test-bucket", accessKeyId: "a", secretAccessKey: "s" },
+};
+
 beforeAll(async () => {
   storageDir = await mkdtemp(join(tmpdir(), "vsync-remote-"));
   workDir = await mkdtemp(join(tmpdir(), "vsync-local-"));
+  MINIMAL_CONFIG["local-fs"] = { basePath: storageDir };
 });
 
 afterAll(async () => {
@@ -22,7 +29,7 @@ afterAll(async () => {
 describe("registry", () => {
   it("resolves every registered backend to an object implementing the full interface", () => {
     for (const name of availableBackends()) {
-      const backend = createBackend(name, { basePath: storageDir });
+      const backend = createBackend(name, MINIMAL_CONFIG[name]);
       for (const method of ["push", "pull", "list", "delete", "testConnection"] as const) {
         expect(typeof backend[method], `${name}.${method}`).toBe("function");
       }

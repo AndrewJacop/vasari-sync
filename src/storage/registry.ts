@@ -1,4 +1,5 @@
 import { LocalFsHandler, type LocalFsConfig } from "./handlers/local-fs.js";
+import { S3Handler, type S3Config } from "./handlers/s3.js";
 import type { BackendConfig, BackendFactory, StorageBackend } from "./types.js";
 
 /**
@@ -9,6 +10,7 @@ import type { BackendConfig, BackendFactory, StorageBackend } from "./types.js";
  */
 const registry: Record<string, BackendFactory> = {
   "local-fs": (config) => new LocalFsHandler(config as unknown as LocalFsConfig),
+  s3: (config) => new S3Handler(config as unknown as S3Config),
 };
 
 export function availableBackends(): string[] {
