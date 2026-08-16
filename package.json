@@ -24,10 +24,12 @@
     "@inquirer/prompts": "^8.5.2",
     "@octokit/rest": "^22.0.1",
     "commander": "^15.0.0",
+    "diff": "^5.2.2",
     "ssh2-sftp-client": "^12.1.1",
     "webdav": "^5.10.0"
   },
   "devDependencies": {
+    "@types/diff": "^5.2.3",
     "@types/node": "^26.2.0",
     "@types/ssh2-sftp-client": "^9.0.6",
     "@vitest/coverage-v8": "^4.1.10",
