@@ -21,7 +21,9 @@ const program = new Command();
 
 program
   .name("vsync")
-  .description("Sync non-VCS project files (.env, secrets, local config) to storage you already own")
+  .description(
+    "Sync non-VCS project files (.env, secrets, local config) to storage you already own",
+  )
   .version(readVersion());
 
 program.parse();

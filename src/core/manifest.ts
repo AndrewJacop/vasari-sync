@@ -24,11 +24,7 @@ export interface Manifest {
 }
 
 export type SyncStatus =
-  | "unchanged"
-  | "local-modified"
-  | "remote-modified"
-  | "remote-missing"
-  | "conflict";
+  "unchanged" | "local-modified" | "remote-modified" | "remote-missing" | "conflict";
 
 export function manifestPath(projectRoot: string): string {
   return join(projectRoot, ".vsync", "manifest.json");

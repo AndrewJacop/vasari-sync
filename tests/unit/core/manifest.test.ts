@@ -23,7 +23,11 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-function entry(path: string, hash: string, overrides: Partial<ManifestFileEntry> = {}): ManifestFileEntry {
+function entry(
+  path: string,
+  hash: string,
+  overrides: Partial<ManifestFileEntry> = {},
+): ManifestFileEntry {
   return {
     path,
     hash,
