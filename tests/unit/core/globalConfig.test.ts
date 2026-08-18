@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   getSecret,
@@ -136,6 +136,64 @@ describe("project registry (add / update / list)", () => {
       path: join(home, "proj-a"),
       backend: "local-fs",
     });
+  });
+});
+
+describe("VSYNC_CONFIG override (multi-profile --config)", () => {
+  it("globalConfigPath returns the VSYNC_CONFIG file, beating VSYNC_HOME and real home", () => {
+    process.env.VSYNC_HOME = join(home, "envhome");
+    process.env.VSYNC_CONFIG = join(home, "alice.json");
+    try {
+      expect(globalConfigPath()).toBe(join(home, "alice.json"));
+    } finally {
+      delete process.env.VSYNC_HOME;
+      delete process.env.VSYNC_CONFIG;
+    }
+  });
+
+  it("resolves a relative VSYNC_CONFIG against cwd", () => {
+    process.env.VSYNC_CONFIG = join("sub", "vsync-alice.json");
+    try {
+      expect(globalConfigPath()).toBe(resolve("sub", "vsync-alice.json"));
+    } finally {
+      delete process.env.VSYNC_CONFIG;
+    }
+  });
+
+  it("explicit homeDir still wins over VSYNC_CONFIG (test isolation)", () => {
+    process.env.VSYNC_CONFIG = join(home, "alice.json");
+    try {
+      expect(globalConfigPath(home)).toBe(join(home, ".vsync", "config.json"));
+    } finally {
+      delete process.env.VSYNC_CONFIG;
+    }
+  });
+
+  it("read/write round-trip through the VSYNC_CONFIG file (missing file → defaults)", async () => {
+    const aliceFile = join(home, "alice-profile", "vsync.json");
+    process.env.VSYNC_CONFIG = aliceFile;
+    try {
+      await expect(readGlobalConfig()).resolves.toEqual({
+        profiles: {},
+        secrets: {},
+        projects: [],
+      });
+      const config: GlobalConfig = {
+        defaultBackend: "local-fs",
+        profiles: { "local-fs": { backend: "local-fs", settings: { basePath: "/x" } } },
+        secrets: {},
+        projects: [],
+      };
+      await writeGlobalConfig(config);
+      await expect(readGlobalConfig()).resolves.toEqual(config);
+      // The default config file is untouched by writes to the override.
+      await expect(readFile(join(home, ".vsync", "config.json"), "utf8")).resolves.toContain(
+        "proj-a",
+      );
+    } finally {
+      delete process.env.VSYNC_CONFIG;
+      await rm(join(home, "alice-profile"), { recursive: true, force: true });
+    }
   });
 });
 

@@ -124,11 +124,11 @@ several projects can share one bucket/server without colliding.
 
 ## What lives where
 
-| Path                                      | Contents                                                                                       | Committed to git?                              |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `.vsync/manifest.json` (project)          | backend name, tracked paths (a plain list — no hashes)                                         | **no** — git-ignored, rebuilt via `vsync link` |
-| `<projectId>/.vsync-index.json` (backend) | vsync's remote index: hash/size/push-time of every file on the backend                         | n/a — lives on the backend, never local        |
-| `~/.vsync/config.json` (machine)          | backend profiles, credentials (0600), local project registry (checkout paths for `vsync list`) | no                                             |
+| Path                                      | Contents                                                                                                                                                      | Committed to git?                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `.vsync/manifest.json` (project)          | backend name, tracked paths (a plain list — no hashes)                                                                                                        | **no** — git-ignored, rebuilt via `vsync link` |
+| `<projectId>/.vsync-index.json` (backend) | vsync's remote index: hash/size/push-time of every file on the backend                                                                                        | n/a — lives on the backend, never local        |
+| `~/.vsync/config.json` (machine)          | backend profiles, credentials (0600), local project registry (checkout paths for `vsync list`) — or any file passed via `--config`/`VSYNC_CONFIG` (see below) | no                                             |
 
 ## Which files does `init` suggest?
 
@@ -178,6 +178,33 @@ detail plus exit 1.
 | `link`                                        | `--pull` (pull right after linking; without a TTY the pull is simply skipped — exit 0)                                                                                                                 |
 | `update`                                      | `-y/--yes` (without it and no TTY: error)                                                                                                                                                              |
 | `add`, `rm`, `status`, `diff`, `push`, `pull` | already non-interactive (`--yes` on push/pull, `--show-values` on diff)                                                                                                                                |
+
+### Multiple profiles on one machine (`--config`)
+
+Every command accepts a global `--config <file>` flag (or the `VSYNC_CONFIG`
+env var) that points at a complete config file — profiles, credentials,
+project registry — instead of `~/.vsync/config.json`. Two people sharing a
+device (or one person keeping work/personal profiles separate) each pass
+their own file and never collide:
+
+```sh
+# one-time setup per user (secrets via env vars preferred over --secret)
+VSYNC_SECRET_ACCESS_KEY_ID=AKIA... VSYNC_SECRET_SECRET_ACCESS_KEY=... \
+  vsync --config ~/.vsync/alice.json config --backend s3 \
+  --set region=eu-west-1 --set bucket=alices-vault --json
+
+# then every command through that file — an alias hides the flag
+alias va='vsync --config ~/.vsync/alice.json'
+va init --project-id myapp --files .env
+va push
+va list            # only alice's projects — registries are per-file
+```
+
+`--config` may appear before or after the subcommand, beats the `VSYNC_HOME`
+env var, and never falls back to the shared `~/.vsync/config.json` while
+set. Without it, behavior is exactly as before. (The per-project manifest
+stays per-checkout — each user keeps their own clone, as with any shared
+working tree.)
 
 ### Secrets for `config`
 

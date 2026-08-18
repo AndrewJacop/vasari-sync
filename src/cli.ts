@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { runAddCommand } from "./commands/add.js";
@@ -35,7 +35,24 @@ program
   .description(
     "Sync non-VCS project files (.env, secrets, local config) to storage you already own",
   )
-  .version(readVersion());
+  .version(readVersion())
+  // Config-file override: one file per user on a shared device. Subcommands
+  // accept it in either position (commander v15 inherits parent options):
+  // `vsync --config x push` or `vsync push --config x`. Funneled into the
+  // VSYNC_CONFIG env var before any command runs — globalConfigPath() turns
+  // it into the active config file for every read/write.
+  .option(
+    "--config <path>",
+    "use this config file instead of ~/.vsync/config.json (multi-profile: one file per user)",
+  )
+  .hook("preAction", (thisCmd) => {
+    const cfg = thisCmd.optsWithGlobals().config;
+    if (cfg === undefined) return;
+    if (typeof cfg !== "string" || !cfg.trim()) {
+      program.error("--config requires a non-empty file path.");
+    }
+    process.env.VSYNC_CONFIG = resolve(cfg);
+  });
 
 program
   .command("config")

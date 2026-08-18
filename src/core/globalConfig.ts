@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * KEYCHAIN DECISION (required by plan Task 2): we do NOT use `keytar`.
@@ -47,10 +47,14 @@ export interface GlobalConfig {
 }
 
 /**
- * Explicit homeDir wins; otherwise VSYNC_HOME lets tests / spawned CLI
- * processes redirect the config root; otherwise the real home directory.
+ * Explicit homeDir wins; otherwise VSYNC_CONFIG points at a full config
+ * file path (set by the global `--config` flag for multi-profile use);
+ * otherwise VSYNC_HOME lets tests / spawned CLI processes redirect the
+ * config root; otherwise the real home directory.
  */
 export function globalConfigPath(homeDir?: string): string {
+  const override = process.env.VSYNC_CONFIG;
+  if (homeDir === undefined && override) return resolve(override);
   return join(homeDir ?? process.env.VSYNC_HOME ?? homedir(), ".vsync", "config.json");
 }
 

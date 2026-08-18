@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-18
+
+### Added
+
+- **`--config <file>`: multiple profiles on one machine.** Every command
+  accepts a global `--config` flag (or the `VSYNC_CONFIG` env var) pointing
+  at a complete config file — profiles, credentials, project registry —
+  instead of `~/.vsync/config.json`. Two people sharing a device each pass
+  their own file (e.g. `alias vsync='vsync --config ~/.vsync/alice.json'`)
+  and never collide; the shared default config is untouched while an
+  override is active. Missing-profile errors now name the config file in
+  use.
+
 ## [0.5.1] - 2026-08-16
 
 ### Fixed

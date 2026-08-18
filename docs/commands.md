@@ -584,11 +584,34 @@ silently doing nothing.
 
 ## Global flags
 
-| Flag        | Effect                                                              |
-| ----------- | ------------------------------------------------------------------- |
-| `--version` | Print the installed `vsync` version                                 |
-| `--help`    | Command list; `vsync <command> --help` for a single command's flags |
-| `--json`    | On every command: one machine-readable object on stdout — see below |
+| Flag              | Effect                                                                                                                                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--config <file>` | Use this config file instead of `~/.vsync/config.json` — one file per user on a shared device (multi-profile). Accepted before or after the subcommand; equivalent to the `VSYNC_CONFIG` env var |
+| `--version`       | Print the installed `vsync` version                                                                                                                                                              |
+| `--help`          | Command list; `vsync <command> --help` for a single command's flags                                                                                                                              |
+| `--json`          | On every command: one machine-readable object on stdout — see below                                                                                                                              |
+
+### Multiple profiles (`--config`)
+
+Every command reads its profiles, secrets, and project registry from one
+config file — `~/.vsync/config.json` by default, or any file passed via
+`--config <file>` (same value as the `VSYNC_CONFIG` env var). Two people
+sharing a machine each keep their own file and never collide:
+
+```console
+$ VSYNC_SECRET_ACCESS_KEY_ID=… VSYNC_SECRET_SECRET_ACCESS_KEY=… \
+    vsync --config ~/.vsync/alice.json config --backend s3 --set region=eu-west-1 --set bucket=alices-vault
+Connection OK (s3).
+Saved 's3' profile (…) and set it as your default backend.
+
+$ alias va='vsync --config ~/.vsync/alice.json'
+$ va init --project-id myapp --files .env
+$ va push
+```
+
+While `--config` (or `VSYNC_CONFIG`) is set, `~/.vsync/config.json` is never
+read or written — `vsync list` shows only that file's registry, and a
+missing-profile error names the file in use.
 
 ---
 

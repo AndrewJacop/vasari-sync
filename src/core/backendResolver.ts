@@ -1,7 +1,7 @@
 import { createBackend } from "../storage/registry.js";
 import type { BackendConfig, StorageBackend } from "../storage/types.js";
 import { withSpinner } from "../utils/progress.js";
-import { readGlobalConfig, type GlobalConfig } from "./globalConfig.js";
+import { globalConfigPath, readGlobalConfig, type GlobalConfig } from "./globalConfig.js";
 import { readManifest } from "./manifest.js";
 
 /** Constructs a backend handler from a profile: settings merged with that
@@ -52,8 +52,10 @@ export async function resolveBackend(
   }
   const globalConfig = await readGlobalConfig(homeDir);
   if (!globalConfig.profiles[manifest.backend]) {
+    const active = globalConfigPath(homeDir);
+    const viaOverride = homeDir === undefined && process.env.VSYNC_CONFIG !== undefined;
     throw new Error(
-      `No saved profile for '${manifest.backend}' on this machine — run \`vsync config\` first.`,
+      `No saved profile for '${manifest.backend}' in ${active} — run \`vsync config${viaOverride ? ` --config ${active}` : ""}\` first.`,
     );
   }
   return createBackendFromProfile(manifest.backend, globalConfig);
