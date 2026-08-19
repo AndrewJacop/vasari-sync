@@ -179,6 +179,11 @@ detail plus exit 1.
 | `update`                                      | `-y/--yes` (without it and no TTY: error)                                                                                                                                                              |
 | `add`, `rm`, `status`, `diff`, `push`, `pull` | already non-interactive (`--yes` on push/pull, `--show-values` on diff)                                                                                                                                |
 
+Large file lists (`add`/`rm` paths, `init --files`) can go over stdin
+instead of argv — `vsync add - < paths.txt` reads newline-separated
+project-relative paths. The OS caps command-line length (cmd.exe ~8k
+characters), so lists beyond ~100 paths belong on stdin.
+
 ### Multiple profiles on one machine (`--config`)
 
 Every command accepts a global `--config <file>` flag (or the `VSYNC_CONFIG`

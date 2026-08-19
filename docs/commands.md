@@ -204,7 +204,7 @@ deleted) and asks for confirmation (or takes `--yes`).
 | `--backend <name>`  | Non-interactive: backend for this project (headless default: the global default backend)                   |
 | `--files <a,b>`     | Non-interactive: project-relative paths to track (repeatable, comma-split; omitted = track nothing). Every |
 |                     | path must exist and be a regular file — validated all-or-nothing. The scorer's rules do NOT filter these — |
-|                     | an explicit path is always honored                                                                         |
+|                     | an explicit path is always honored. A value of `-` reads newline-separated paths from stdin                |
 | `--yes`             | Re-initialize despite the existing manifest (headless without it: exit 1, nothing changed)                 |
 | `--list`            | Print the candidate files (same scan as the picker: path, size, `boosted`/`shown` classification) and exit |
 | `--json`            | Machine-readable output                                                                                    |
@@ -305,6 +305,9 @@ uploaded** and local files are untouched — `vsync push` does the upload.
 All-or-nothing: if any listed path is already tracked, missing, or not a
 regular file, nothing is added.
 
+Large lists: `vsync add -` reads newline-separated paths from stdin —
+no command-line length limit (see [Scripting & agents](#scripting--agents)).
+
 ### Example
 
 ```console
@@ -314,6 +317,9 @@ Nothing was uploaded — run `vsync push` to sync tracked files.
 
 $ vsync add .env
 [vsync] Cannot add: '.env' is already tracked. Nothing was added.
+
+$ printf '%s\n' a.env b.env | vsync add -
+Added 2 file(s) to tracking: a.env, b.env.
 ```
 
 ---
@@ -325,6 +331,7 @@ only: **local files are NOT deleted**, and copies already in storage stay
 there until deleted on the backend itself.
 
 All-or-nothing: if any listed path isn't tracked, nothing is removed.
+Like `add`, `vsync rm -` reads the path list from stdin.
 
 ### Example
 
@@ -627,6 +634,13 @@ failure; its per-file results still print first).
 
 - **stdout** carries exactly one JSON object (pretty-printed, 2-space
   indent) when `--json` is passed — nothing else ever lands there.
+- **Large file lists go over stdin, not argv.** `vsync add -`, `vsync rm -`,
+  and `vsync init --files -` read newline-separated project-relative
+  paths from stdin. The OS caps command-line length (cmd.exe ~8k chars,
+  Windows ~32k, Linux ~2MB), so anything beyond ~100 paths should be
+  piped: `vsync add - < paths.txt`. A `-` among positional paths or
+  `--files` values is expanded in place; with a TTY and nothing piped the
+  command fails fast instead of waiting for input.
 - **stderr** carries warnings, progress lines, and error messages.
 - On a partial push/pull the result object is printed _before_ the
   incomplete error, so callers get per-file detail plus exit 1.

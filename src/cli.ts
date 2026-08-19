@@ -14,6 +14,7 @@ import { runPushCommand } from "./commands/push.js";
 import { runPullCommand } from "./commands/pull.js";
 import { runListCommand } from "./commands/list.js";
 import { runUpdateCommand } from "./commands/update.js";
+import { expandDash } from "./utils/stdin.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -89,7 +90,7 @@ program
   .option("--backend <name>", "non-interactive: backend for this project (default: global default)")
   .option(
     "--files <paths>",
-    "non-interactive: comma-separated project-relative file paths to track (repeatable)",
+    "non-interactive: project-relative file paths to track (repeatable, comma-split; `-` reads newline-separated paths from stdin)",
     (v: string, prev: string[]) => prev.concat(v),
     [],
   )
@@ -107,12 +108,14 @@ program
 
 program
   .command("add")
-  .description("Track file(s) for syncing (manifest only — nothing is uploaded)")
-  .argument("<path...>", "file path(s) inside the project")
+  .description(
+    "Track file(s) for syncing (manifest only — nothing is uploaded); `-` reads paths from stdin",
+  )
+  .argument("<path...>", "file path(s) inside the project, or `-` for a stdin list")
   .option("--json", "machine-readable output")
   .action(async (paths: string[], options: { json?: boolean }) => {
     try {
-      await runAddCommand(process.cwd(), paths, options.json === true);
+      await runAddCommand(process.cwd(), await expandDash(paths), options.json === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -121,12 +124,12 @@ program
 
 program
   .command("rm")
-  .description("Stop tracking file(s) — local files are NOT deleted")
-  .argument("<path...>", "tracked file path(s)")
+  .description("Stop tracking file(s) — local files are NOT deleted; `-` reads paths from stdin")
+  .argument("<path...>", "tracked file path(s), or `-` for a stdin list")
   .option("--json", "machine-readable output")
   .action(async (paths: string[], options: { json?: boolean }) => {
     try {
-      await runRmCommand(process.cwd(), paths, options.json === true);
+      await runRmCommand(process.cwd(), await expandDash(paths), options.json === true);
     } catch (err) {
       console.error(`[vsync] ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;

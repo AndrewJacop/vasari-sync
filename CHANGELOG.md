@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-19
+
+### Added
+
+- **`-` reads file lists from stdin** (`vsync add -`, `vsync rm -`,
+  `vsync init --files -`): newline-separated project-relative paths, one
+  per line, with no command-line length limit. Large lists overflow the
+  OS argv caps (cmd.exe caps the whole command line at ~8k characters,
+  Windows CreateProcess at ~32k) — piping the list instead keeps the
+  command line a fixed size at any file count:
+  `vsync add - < paths.txt` or `printf '%s\n' a b c | vsync add -`. A `-`
+  among positional paths or `--files` values is expanded in place; on a
+  TTY with nothing piped the command fails fast instead of waiting for
+  input.
+
 ## [0.6.0] - 2026-08-18
 
 ### Added
