@@ -38,7 +38,9 @@ const h = vi.hoisted(() => {
       async getBlob({ file_sha }: { file_sha: string }) {
         const hit = [...state.files.entries()].find(([, b]) => blobSha(b) === file_sha);
         if (!hit) throw err(`no blob '${file_sha}'`, 404);
-        return { data: { content: hit[1].toString("base64"), encoding: "base64", size: hit[1].length } };
+        return {
+          data: { content: hit[1].toString("base64"), encoding: "base64", size: hit[1].length },
+        };
       },
     };
     repos = {
@@ -55,7 +57,9 @@ const h = vi.hoisted(() => {
               path,
               sha: blobSha(buf),
               size: buf.length,
-              ...(big ? { encoding: "none" } : { encoding: "base64", content: buf.toString("base64") }),
+              ...(big
+                ? { encoding: "none" }
+                : { encoding: "base64", content: buf.toString("base64") }),
             },
           };
         }

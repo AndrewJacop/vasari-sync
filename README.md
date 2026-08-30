@@ -116,6 +116,10 @@ Full command reference: [docs/commands.md](docs/commands.md).
 | `local-fs`    | A plain directory — test/eval backend; also handy for sync via a mounted/synced folder (Dropbox-style folders, mounted NAS shares) | `basePath`                                                                                                                                                                 |
 
 \* = secret; stored only in `~/.vsync/config.json` (0600), never in the
+
+github-repo note: files of any size up to GitHub's 100 MB blob limit are
+supported — reads over 1 MB transparently go through the git blobs API
+(the contents API caps reads at 1 MB).
 project config that gets committed.
 
 Remote layout: every project's files live under a `<projectId>/` prefix at

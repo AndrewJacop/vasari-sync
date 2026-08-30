@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-08-30
+
+### Fixed
+
+- **The published 0.6.1 tarball actually contains the stdin file lists**
+  documented under 0.6.1. That tarball was built from a stale `dist/`
+  (no build hook existed), so `vsync add -` / `rm -` / `init --files -`
+  failed with `Cannot add: '-' does not exist` despite the version
+  number claiming otherwise. `npm publish` now always compiles first
+  (`prepublishOnly`).
+- **`github-repo`: pull files larger than 1 MB.** The contents API
+  refuses to serve reads over 1 MB (returns `encoding: "none"` with no
+  content), which made the pull fail with `Unknown encoding: none`.
+  Large files are now refetched through the git blobs API (base64, up
+  to 100 MB) using the sha from the contents response.
+
 ## [0.6.1] - 2026-08-19
 
 ### Added
