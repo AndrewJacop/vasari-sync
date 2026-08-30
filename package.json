@@ -1,6 +1,6 @@
 {
   "name": "vasari-sync",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Sync non-VCS project files (.env, secrets, local config) to storage you already own",
   "bin": {
     "vsync": "dist/cli.js"
@@ -9,6 +9,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "lint": "eslint .",
