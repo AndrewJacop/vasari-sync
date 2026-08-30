@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-08-30
+
+### Fixed
+
+- **The 0.6.2 tarball on the registry was published from a tree without
+  the >1 MB pull fix below** — it carries the stdin file lists but not
+  the git-blobs fallback, and npm versions are immutable. 0.6.3 is the
+  first registry release containing both fixes. If you installed 0.6.2
+  from npm, upgrade: `npm i -g vasari-sync@0.6.3`.
+
 ## [0.6.2] - 2026-08-30
 
 ### Fixed

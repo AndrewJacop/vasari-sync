@@ -1,6 +1,6 @@
 {
   "name": "vasari-sync",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Sync non-VCS project files (.env, secrets, local config) to storage you already own",
   "bin": {
     "vsync": "dist/cli.js"
