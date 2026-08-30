@@ -34,19 +34,28 @@ const h = vi.hoisted(() => {
     Object.assign(new Error(message), { status: code });
 
   class FakeOctokit {
+    git = {
+      async getBlob({ file_sha }: { file_sha: string }) {
+        const hit = [...state.files.entries()].find(([, b]) => blobSha(b) === file_sha);
+        if (!hit) throw err(`no blob '${file_sha}'`, 404);
+        return { data: { content: hit[1].toString("base64"), encoding: "base64", size: hit[1].length } };
+      },
+    };
     repos = {
       async getContent({ path, ref }: { path: string; ref?: string }) {
         if (ref !== undefined && !state.branches.has(ref)) throw err(`no ref '${ref}'`, 404);
         const buf = state.files.get(path);
         if (buf) {
+          // Real GitHub: reads over 1 MB get no content and encoding "none"
+          // — the handler must fall back to the git blobs API for those.
+          const big = buf.length > 1_000_000;
           return {
             data: {
               type: "file",
               path,
               sha: blobSha(buf),
               size: buf.length,
-              encoding: "base64",
-              content: buf.toString("base64"),
+              ...(big ? { encoding: "none" } : { encoding: "base64", content: buf.toString("base64") }),
             },
           };
         }
@@ -251,6 +260,16 @@ describe("github-repo handler (faked Octokit)", () => {
     await handler.delete(KEY);
     expect((await handler.list()).map((f) => f.path)).toEqual(["a-dir/deep/b.txt", "zzz.txt"]);
     expect(h.state.commits.at(-1)?.message).toBe(`vsync: delete ${REMOTE}`);
+  });
+
+  it("pull falls back to the blobs API for files over 1 MB (contents API returns encoding none)", async () => {
+    const big = Buffer.alloc(1_100_000, 7);
+    await writeFile(LOCAL(), big);
+    const handler = new GithubRepoHandler(CONFIG);
+    await handler.push(LOCAL(), KEY);
+    const restored = join(workDir, "restored-big", "big.bin");
+    await handler.pull(KEY, restored); // contents API alone would throw "Unknown encoding: none"
+    expect(await readFile(restored)).toEqual(big);
   });
 
   it("pull maps a not-found remote to a clear error and leaves no file behind", async () => {

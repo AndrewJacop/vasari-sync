@@ -128,10 +128,20 @@ export class GithubRepoHandler implements StorageBackend {
       if (Array.isArray(res.data) || res.data.type !== "file") {
         throw new Error(`Remote path is not a file: ${remoteKey}`);
       }
-      // octokit types `encoding` as plain string; the contents API
-      // documents only base64/none — narrow for Buffer.from's signature.
-      const encoding = (res.data.encoding ?? "base64") as BufferEncoding;
-      buf = Buffer.from(res.data.content ?? "", encoding);
+      // The contents API serves only files up to 1 MB — larger ones come
+      // back with encoding "none" and no content (GitHub caps reads).
+      // Refetch the same blob via the git blobs API (base64, up to 100 MB)
+      // using the sha this response carries.
+      if (res.data.encoding !== undefined && res.data.encoding !== "base64") {
+        const blob = await this.octokit.git.getBlob({
+          owner: this.config.owner,
+          repo: this.config.repo,
+          file_sha: res.data.sha,
+        });
+        buf = Buffer.from(blob.data.content, "base64");
+      } else {
+        buf = Buffer.from(res.data.content ?? "", "base64");
+      }
     } catch (err) {
       if (isNotFound(err)) throw notFound(remoteKey);
       throw err;
